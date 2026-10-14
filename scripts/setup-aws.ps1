@@ -31,7 +31,7 @@ Invoke-CloudLinkAws ec2 describe-key-pairs --key-names vockey --output json | Ou
 
 # Reuse the stack's AMI on later runs to avoid unexpected replacements.
 $stackList = Invoke-CloudLinkAws cloudformation list-stacks --query "StackSummaries[?StackName=='$stack' && StackStatus!='DELETE_COMPLETE']" --output json
-$stacks = @($stackList | ConvertFrom-Json)
+$stacks = @($stackList | ConvertFrom-Json | Where-Object { $_.StackName -eq $stack })
 $ami = $null
 
 if ($stacks.Count -gt 0) {
@@ -46,12 +46,12 @@ if ($stacks.Count -gt 0) {
 if (-not $ami) {
     # Avoid making another copy if a manual CloudLink setup already exists.
     $oldVpcs = Invoke-CloudLinkAws ec2 describe-vpcs --filters "Name=tag:Name,Values=CloudLink-VPC" --query "Vpcs[].VpcId" --output json
-    if (@($oldVpcs | ConvertFrom-Json).Count -gt 0) {
+    if (@($oldVpcs | ConvertFrom-Json | Where-Object { $_ }).Count -gt 0) {
         throw "A CloudLink VPC already exists outside this stack. Stop to avoid duplicates."
     }
 
     $instances = Invoke-CloudLinkAws ec2 describe-instances --filters "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" --query "Reservations[].Instances[].InstanceId" --output json
-    if (@($instances | ConvertFrom-Json).Count -gt 7) {
+    if (@($instances | ConvertFrom-Json | Where-Object { $_ }).Count -gt 7) {
         throw "Not enough room for two instances under the sandbox's nine-instance limit."
     }
 
@@ -95,3 +95,4 @@ Write-Host ""
 Write-Host "Next: download your sandbox PEM key and test SSH."
 Write-Host "Then test port 8000 from the source server."
 Write-Host "Do not claim the baseline passed until that test succeeds."
+

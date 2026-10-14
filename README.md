@@ -2,7 +2,7 @@
 
 CloudLink will test connections between AWS servers, explain likely problems, and save results. It gives guidance; it will not automatically change cloud settings.
 
-## Status â€” October 14, 2026
+## Status - October 14, 2026
 
 | Work | Status |
 |---|---|
@@ -39,12 +39,12 @@ Source -- private IP / TCP 8000 --> destination test HTTP service
 - Two Amazon Linux 2023 `t3.micro` instances, each with an 8 GB `gp2` root disk.
 - Sandbox key pair: `vockey`. No new IAM user or role is created.
 
-## Recreate the setup in your sandbox â€” Windows PowerShell
+## Recreate the setup in your sandbox - Windows PowerShell
 
 ### 1. Get the code
 
 ```powershell
-git clone https://github.com/dong-quan-tran/cloudlink.git
+git clone [https://github.com/dong-quan-tran/cloudlink.git](https://github.com/dong-quan-tran/cloudlink.git)
 cd cloudlink
 ```
 
@@ -62,7 +62,7 @@ Get-Command scp
 Install Git, Windows OpenSSH Client, or AWS CLI if its check fails. To install AWS CLI:
 
 ```powershell
-Start-Process msiexec.exe -ArgumentList '/i https://awscli.amazonaws.com/AWSCLIV2.msi' -Wait
+Start-Process msiexec.exe -ArgumentList '/i [https://awscli.amazonaws.com/AWSCLIV2.msi](https://awscli.amazonaws.com/AWSCLIV2.msi)' -Wait
 ```
 
 Complete the installer and reopen your terminal in the repository. Then run `aws --version` again.
@@ -150,7 +150,7 @@ CloudLink destination is healthy
 
 Record your own result before marking setup verified. Johnny's earlier result does not verify a fresh teammate deployment.
 
-## Reconnect next time â€” no rebuild
+## Reconnect next time - no rebuild
 
 Start the sandbox and enter fresh credentials in your repo terminal:
 
@@ -198,4 +198,3 @@ Do not commit credentials or assume an EC2 instance automatically has AWS API pe
 ## Safety and cleanup
 
 Never commit keys, tokens, passwords, or local settings. Keep the test HTTP service limited to its dedicated directory; it is not a production server. Use only dedicated project resources. See [operations](docs/operations.md) before deleting anything. CloudFormation cleanup does not remove Johnny's separately created manual environment.
-
