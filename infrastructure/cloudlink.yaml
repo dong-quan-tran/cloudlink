@@ -1,0 +1,231 @@
+﻿AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudLink development network and test servers
+
+Parameters:
+  AmiId:
+    Type: AWS::EC2::Image::Id
+  RootDevice:
+    Type: String
+  SshCidr:
+    Type: String
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: vockey
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: CloudLink-VPC
+        - Key: Project
+          Value: CloudLink
+
+  SourceSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.20.1.0/24
+      Tags:
+        - Key: Name
+          Value: CloudLink-Source
+
+  DestinationSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.20.2.0/24
+      Tags:
+        - Key: Name
+          Value: CloudLink-Destination
+
+  Gateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: CloudLink-IGW
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref Gateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: CloudLink-Public-RT
+
+  InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Gateway
+
+  SourceRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SourceSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  DestinationRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DestinationSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  SourceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudLink source server
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SshCidr
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: CloudLink-Source-SG
+
+  DestinationSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudLink destination server
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SshCidr
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref SourceSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: CloudLink-Destination-SG
+
+  SourceInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - InternetRoute
+      - SourceRouteAssociation
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      MetadataOptions:
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: !Ref RootDevice
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp2
+            DeleteOnTermination: true
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          AssociatePublicIpAddress: true
+          SubnetId: !Ref SourceSubnet
+          GroupSet:
+            - !Ref SourceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: CloudLink-Source
+        - Key: Project
+          Value: CloudLink
+
+  DestinationInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - InternetRoute
+      - DestinationRouteAssociation
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      MetadataOptions:
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: !Ref RootDevice
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp2
+            DeleteOnTermination: true
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          AssociatePublicIpAddress: true
+          SubnetId: !Ref DestinationSubnet
+          GroupSet:
+            - !Ref DestinationSecurityGroup
+      Tags:
+        - Key: Name
+          Value: CloudLink-Destination
+        - Key: Project
+          Value: CloudLink
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euo pipefail
+          install -d -m 755 /opt/cloudlink-test
+          echo 'CloudLink destination is healthy' > /opt/cloudlink-test/index.html
+          cat > /etc/systemd/system/cloudlink-test.service <<'UNIT'
+          [Unit]
+          Description=CloudLink test HTTP server
+          After=network.target
+
+          [Service]
+          User=ec2-user
+          ExecStart=/usr/bin/python3 -m http.server 8000 --bind 0.0.0.0 --directory /opt/cloudlink-test
+          Restart=on-failure
+          RestartSec=2
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now cloudlink-test
+
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+  SourceSubnetId:
+    Value: !Ref SourceSubnet
+  DestinationSubnetId:
+    Value: !Ref DestinationSubnet
+  InternetGatewayId:
+    Value: !Ref Gateway
+  PublicRouteTableId:
+    Value: !Ref PublicRouteTable
+  SourceSecurityGroupId:
+    Value: !Ref SourceSecurityGroup
+  DestinationSecurityGroupId:
+    Value: !Ref DestinationSecurityGroup
+  SourceInstanceId:
+    Value: !Ref SourceInstance
+  DestinationInstanceId:
+    Value: !Ref DestinationInstance
+  SourcePrivateIP:
+    Value: !GetAtt SourceInstance.PrivateIp
+  SourcePublicIP:
+    Value: !GetAtt SourceInstance.PublicIp
+  DestinationPrivateIP:
+    Value: !GetAtt DestinationInstance.PrivateIp
+  DestinationPublicIP:
+    Value: !GetAtt DestinationInstance.PublicIp
