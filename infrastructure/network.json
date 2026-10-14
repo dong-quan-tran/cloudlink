@@ -1,6 +1,8 @@
-{
+﻿{
     "Region":  "us-east-1",
     "DestinationSubnetId":  "subnet-09a085c151d53c0d2",
     "SourceSubnetId":  "subnet-000afe0f1caad6149",
-    "VpcId":  "vpc-0b8d43f9aa6cee502"
+    "VpcId":  "vpc-0b8d43f9aa6cee502",
+    "InternetGatewayId":  "igw-018a3aa0693698626",
+    "PublicRouteTableId":  "rtb-095c579543957109f"
 }
