@@ -1,0 +1,263 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudLink VPC, three public subnets, routes, and security groups
+
+Parameters:
+  ManagementCidr:
+    Type: String
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/32$'
+    ConstraintDescription: Supply one public IPv4 address followed by /32
+    Description: Public IPv4 address allowed to open the demo dashboard and SSH to lab instances
+
+Resources:
+  LabVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.10.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: CloudLink-VPC
+        - Key: Project
+          Value: CloudLink
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVpc
+      CidrBlock: 10.10.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: CloudLink-Subnet-A
+        - Key: Project
+          Value: CloudLink
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVpc
+      CidrBlock: 10.10.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: CloudLink-Subnet-B
+        - Key: Project
+          Value: CloudLink
+
+  WebSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVpc
+      CidrBlock: 10.10.3.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: CloudLink-Web-Subnet
+        - Key: Project
+          Value: CloudLink
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: CloudLink-IGW
+        - Key: Project
+          Value: CloudLink
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref LabVpc
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref LabVpc
+      Tags:
+        - Key: Name
+          Value: CloudLink-Public-Routes
+        - Key: Project
+          Value: CloudLink
+
+  RouteAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref SubnetA
+
+  RouteAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref SubnetB
+
+  WebRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref WebSubnet
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SecurityGroupA:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudLink probe node A access
+      VpcId: !Ref LabVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref ManagementCidr
+      Tags:
+        - Key: Name
+          Value: CloudLink-SG-A
+        - Key: Project
+          Value: CloudLink
+
+  SecurityGroupB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudLink probe node B access
+      VpcId: !Ref LabVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref ManagementCidr
+      Tags:
+        - Key: Name
+          Value: CloudLink-SG-B
+        - Key: Project
+          Value: CloudLink
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudLink web instance management and browser access
+      VpcId: !Ref LabVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref ManagementCidr
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref ManagementCidr
+      Tags:
+        - Key: Name
+          Value: CloudLink-Web-SG
+        - Key: Project
+          Value: CloudLink
+
+  WebHttpFromA:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref WebSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref SecurityGroupA
+
+  WebHttpFromB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref WebSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref SecurityGroupB
+
+  NodeASshFromWeb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroupA
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref WebSecurityGroup
+
+  NodeBSshFromWeb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroupB
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref WebSecurityGroup
+
+  NodeAHttpFromB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroupA
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref SecurityGroupB
+
+  NodeAIcmpFromB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroupA
+      IpProtocol: icmp
+      FromPort: -1
+      ToPort: -1
+      SourceSecurityGroupId: !Ref SecurityGroupB
+
+  NodeBHttpFromA:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroupB
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref SecurityGroupA
+
+  NodeBIcmpFromA:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroupB
+      IpProtocol: icmp
+      FromPort: -1
+      ToPort: -1
+      SourceSecurityGroupId: !Ref SecurityGroupA
+
+Outputs:
+  VpcId:
+    Value: !Ref LabVpc
+    Export:
+      Name: !Sub '${AWS::StackName}-VpcId'
+  SubnetAId:
+    Value: !Ref SubnetA
+    Export:
+      Name: !Sub '${AWS::StackName}-SubnetAId'
+  SubnetBId:
+    Value: !Ref SubnetB
+    Export:
+      Name: !Sub '${AWS::StackName}-SubnetBId'
+  WebSubnetId:
+    Value: !Ref WebSubnet
+    Export:
+      Name: !Sub '${AWS::StackName}-WebSubnetId'
+  SecurityGroupAId:
+    Value: !Ref SecurityGroupA
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupAId'
+  SecurityGroupBId:
+    Value: !Ref SecurityGroupB
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupBId'
+  WebSecurityGroupId:
+    Value: !Ref WebSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-WebSecurityGroupId'

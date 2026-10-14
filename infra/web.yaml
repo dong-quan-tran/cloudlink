@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudLink public web instance, installed from a public Git repository
+
+Parameters:
+  NetworkStackName:
+    Type: String
+    Default: cloudlink-network
+    Description: Name of the deployed CloudLink network stack
+  RepositoryUrl:
+    Type: String
+    AllowedPattern: '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$'
+    ConstraintDescription: Supply a public GitHub repository HTTPS URL
+    Description: Public CloudLink repository cloned by the web instance at first boot
+  RepositoryRef:
+    Type: String
+    Default: main
+    AllowedPattern: '^[A-Za-z0-9._/-]+$'
+    Description: Public repository branch or tag to install
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  WebInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      KeyName: vockey
+      SubnetId:
+        Fn::ImportValue:
+          Fn::Sub: '${NetworkStackName}-WebSubnetId'
+      PrivateIpAddress: 10.10.3.10
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            Fn::Sub: '${NetworkStackName}-WebSecurityGroupId'
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp2
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: CloudLink-Web
+        - Key: Project
+          Value: CloudLink
+        - Key: CloudLinkRole
+          Value: Web
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              set -euxo pipefail
+              dnf install -y git nginx python3.11 python3.11-pip
+              useradd --system --create-home --home-dir /var/lib/cloudlink --shell /sbin/nologin cloudlink
+              install -d -m 0700 -o cloudlink -g cloudlink /var/lib/cloudlink/.ssh
+              runuser -u cloudlink -- ssh-keygen -q -t ed25519 -N '' -f /var/lib/cloudlink/.ssh/id_ed25519
+              install -m 0644 /var/lib/cloudlink/.ssh/id_ed25519.pub /usr/share/nginx/html/probe-key
+              install -d -m 0755 /etc/cloudlink /opt/cloudlink
+              cat > /etc/cloudlink/nodes.json <<'JSON'
+              [
+                {"instance_id":"node-a","name":"CloudLink-Node-A","private_ip":"10.10.1.10","public_ip":null,"vpc_id":"${VpcId}","subnet_id":"${SubnetAId}","security_group_ids":["${SecurityGroupAId}"]},
+                {"instance_id":"node-b","name":"CloudLink-Node-B","private_ip":"10.10.2.10","public_ip":null,"vpc_id":"${VpcId}","subnet_id":"${SubnetBId}","security_group_ids":["${SecurityGroupBId}"]}
+              ]
+              JSON
+              cat > /etc/nginx/nginx.conf <<'NGINX'
+              user nginx;
+              worker_processes auto;
+              error_log /var/log/nginx/error.log;
+              pid /run/nginx.pid;
+              events { worker_connections 1024; }
+              http {
+                include /etc/nginx/mime.types;
+                default_type application/octet-stream;
+                upstream cloudlink_app { server unix:/run/cloudlink/cloudlink.sock; }
+                server {
+                  listen 80 default_server;
+                  server_name _;
+                  location = /probe-key {
+                    allow 10.10.0.0/16;
+                    deny all;
+                    alias /usr/share/nginx/html/probe-key;
+                  }
+                  location / {
+                    proxy_pass http://cloudlink_app;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                  }
+                }
+              }
+              NGINX
+              nginx -t
+              systemctl enable --now nginx
+              git clone --depth 1 --branch '${RepositoryRef}' '${RepositoryUrl}' /opt/cloudlink/app
+              python3.11 -m venv /opt/cloudlink/venv
+              /opt/cloudlink/venv/bin/pip install -r /opt/cloudlink/app/requirements.txt
+              cat > /etc/systemd/system/cloudlink.service <<'UNIT'
+              [Unit]
+              Description=CloudLink web application
+              After=network-online.target
+              Wants=network-online.target
+              [Service]
+              Type=simple
+              User=cloudlink
+              Group=nginx
+              WorkingDirectory=/opt/cloudlink/app
+              Environment=CLOUDLINK_INVENTORY_PATH=/etc/cloudlink/nodes.json
+              Environment=CLOUDLINK_KEY_PATH=/var/lib/cloudlink/.ssh/id_ed25519
+              Environment=CLOUDLINK_SOURCE_ADDRESS=private
+              Environment=CLOUDLINK_DATA_PATH=/var/lib/cloudlink/history.sqlite3
+              RuntimeDirectory=cloudlink
+              RuntimeDirectoryMode=0750
+              ExecStart=/opt/cloudlink/venv/bin/gunicorn --workers 1 --bind unix:/run/cloudlink/cloudlink.sock --umask 007 cloudlink.web:create_app()
+              Restart=always
+              RestartSec=2
+              [Install]
+              WantedBy=multi-user.target
+              UNIT
+              systemctl daemon-reload
+              systemctl enable --now cloudlink
+            - VpcId:
+                Fn::ImportValue:
+                  Fn::Sub: '${NetworkStackName}-VpcId'
+              SubnetAId:
+                Fn::ImportValue:
+                  Fn::Sub: '${NetworkStackName}-SubnetAId'
+              SubnetBId:
+                Fn::ImportValue:
+                  Fn::Sub: '${NetworkStackName}-SubnetBId'
+              SecurityGroupAId:
+                Fn::ImportValue:
+                  Fn::Sub: '${NetworkStackName}-SecurityGroupAId'
+              SecurityGroupBId:
+                Fn::ImportValue:
+                  Fn::Sub: '${NetworkStackName}-SecurityGroupBId'
+
+Outputs:
+  WebInstanceId:
+    Value: !Ref WebInstance
+  WebPublicIp:
+    Value: !GetAtt WebInstance.PublicIp
+  WebUrl:
+    Value: !Sub 'http://${WebInstance.PublicIp}/'

@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudLink pair of same-VPC probe instances
+
+Parameters:
+  NetworkStackName:
+    Type: String
+    Default: cloudlink-network
+    Description: Name of the deployed CloudLink network stack
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  InstanceA:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      KeyName: vockey
+      SubnetId:
+        Fn::ImportValue:
+          Fn::Sub: '${NetworkStackName}-SubnetAId'
+      PrivateIpAddress: 10.10.1.10
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            Fn::Sub: '${NetworkStackName}-SecurityGroupAId'
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp2
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: CloudLink-Node-A
+        - Key: Project
+          Value: CloudLink
+        - Key: CloudLinkRole
+          Value: Probe
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          mkdir -p /opt/cloudlink
+          printf 'CloudLink node A\n' > /opt/cloudlink/health
+          cat > /etc/systemd/system/cloudlink-health.service <<'UNIT'
+          [Unit]
+          Description=CloudLink test HTTP endpoint
+          After=network-online.target
+          Wants=network-online.target
+          [Service]
+          Type=simple
+          User=ec2-user
+          ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /opt/cloudlink
+          Restart=always
+          RestartSec=2
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now cloudlink-health.service
+          install -d -m 0700 -o ec2-user -g ec2-user /home/ec2-user/.ssh
+          for attempt in $(seq 1 60); do
+            if curl -fsS --connect-timeout 2 --max-time 4 http://10.10.3.10/probe-key -o /tmp/cloudlink-probe.pub; then
+              break
+            fi
+            sleep 5
+          done
+          test -s /tmp/cloudlink-probe.pub
+          cat /tmp/cloudlink-probe.pub >> /home/ec2-user/.ssh/authorized_keys
+          chown ec2-user:ec2-user /home/ec2-user/.ssh/authorized_keys
+          chmod 0600 /home/ec2-user/.ssh/authorized_keys
+
+  InstanceB:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      KeyName: vockey
+      SubnetId:
+        Fn::ImportValue:
+          Fn::Sub: '${NetworkStackName}-SubnetBId'
+      PrivateIpAddress: 10.10.2.10
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            Fn::Sub: '${NetworkStackName}-SecurityGroupBId'
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp2
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: CloudLink-Node-B
+        - Key: Project
+          Value: CloudLink
+        - Key: CloudLinkRole
+          Value: Probe
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          mkdir -p /opt/cloudlink
+          printf 'CloudLink node B\n' > /opt/cloudlink/health
+          cat > /etc/systemd/system/cloudlink-health.service <<'UNIT'
+          [Unit]
+          Description=CloudLink test HTTP endpoint
+          After=network-online.target
+          Wants=network-online.target
+          [Service]
+          Type=simple
+          User=ec2-user
+          ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /opt/cloudlink
+          Restart=always
+          RestartSec=2
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now cloudlink-health.service
+          install -d -m 0700 -o ec2-user -g ec2-user /home/ec2-user/.ssh
+          for attempt in $(seq 1 60); do
+            if curl -fsS --connect-timeout 2 --max-time 4 http://10.10.3.10/probe-key -o /tmp/cloudlink-probe.pub; then
+              break
+            fi
+            sleep 5
+          done
+          test -s /tmp/cloudlink-probe.pub
+          cat /tmp/cloudlink-probe.pub >> /home/ec2-user/.ssh/authorized_keys
+          chown ec2-user:ec2-user /home/ec2-user/.ssh/authorized_keys
+          chmod 0600 /home/ec2-user/.ssh/authorized_keys
+
+Outputs:
+  NodeAInstanceId:
+    Value: !Ref InstanceA
+  NodeBInstanceId:
+    Value: !Ref InstanceB
+  NodeAPrivateIp:
+    Value: !GetAtt InstanceA.PrivateIp
+  NodeBPrivateIp:
+    Value: !GetAtt InstanceB.PrivateIp
+  NodeAPublicIp:
+    Value: !GetAtt InstanceA.PublicIp
+  NodeBPublicIp:
+    Value: !GetAtt InstanceB.PublicIp

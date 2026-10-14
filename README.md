@@ -1,200 +1,82 @@
-﻿# CloudLink
+# CloudLink
 
-CloudLink will test connections between AWS servers, explain likely problems, and save results. It gives guidance; it will not automatically change cloud settings.
+CloudLink tests connectivity **from one instance to another**, rather than from the user's browser. The first hosted version is a three-instance AWS Academy lab: one public web instance and two public-subnet probe instances in the same VPC. The web instance reaches a chosen source over a separate management SSH path; the source then runs the selected ping, HTTP, HTTPS, SSH-banner, or custom TCP-port test against the destination. A failed service check is a useful result, not a reason the web app itself should fail.
 
-## Status - October 14, 2026
+## Current state
 
-| Work | Status |
-|---|---|
-| Johnny's VPC, subnets, internet routing, security groups | Created |
-| Two EC2 servers and SSH access | Verified October 13 |
-| Destination Python test service on port 8000 | Verified October 13 |
-| Source-to-destination HTTP baseline | Passed October 13 |
-| Automated CloudFormation recreation | Added; not yet verified in a teammate's sandbox |
-| Connection and verification helper scripts | Added; runtime testing pending |
-| Controlled failure scenarios | Planned; not run |
-| CloudLink app, dashboard, diagnostics, saved history | Not yet integrated |
+The earlier two-node lab was successfully tested from A to B (ICMP and TCP/8080). The **new three-stack hosted deployment has not yet been tested end to end**. Starting the sandbox, uploading templates, and creating CloudFormation stacks are separate steps; uploading YAML files alone does not create instances or install the app. The web instance also needs a public GitHub repository containing the latest CloudLink code, supplied as `RepositoryUrl` when the web stack is deployed.
 
-These are recorded results, not a live AWS status check. The Python HTTP server is a test target, not the CloudLink app.
+## Local app versus hosted app
 
-## Team
+| Where CloudLink runs | How it finds A and B | How it tells A to run a test |
+| --- | --- | --- |
+| On your Mac (`127.0.0.1:5001`) | Boto3 uses temporary AWS Academy credentials from your terminal to list running `Project=CloudLink`, `CloudLinkRole=Probe` instances. | EC2 Instance Connect supplies a short-lived SSH key; your Mac connects to A's **public IP** on port 22. The Academy account must permit these API actions, and `ManagementCidr` must include your current public IP. |
+| On the CloudFormation web instance | A small inventory file generated at first boot lists the two lab nodes. No AWS API credentials are needed on this instance. | A dedicated SSH key, generated on the web instance, lets it connect to A's **private IP** on port 22. The probe nodes fetch only the public key at first boot. |
 
-- Johnny: AWS network, servers, failure scenarios, setup and test evidence.
-- Joel: app, dashboard, connection probes, AWS configuration checks and result storage.
+CloudFormation itself uses the Academy credentials of whoever deploys the stacks (for example, in CloudShell). Those deployment credentials are **not** copied into the hosted app. The hosted design does not use an EC2 instance profile or Systems Manager Run Command. The local app's live discovery and Instance Connect path may be restricted by Academy permissions; neither has been verified for the new stacks. Do not store temporary credentials, private keys, or session tokens in the repository.
 
-## What we built
+This MVP lists only the two CloudLink lab nodes. Arbitrary private-only instances or peered VPCs require a working management path to the source and suitable network routes and rules; they are future extensions.
 
-```text
-Laptop -- AWS CLI credentials --> sandbox AWS APIs
-Laptop -- SSH key / port 22 --> source and destination public IPs
-Source -- private IP / TCP 8000 --> destination test HTTP service
+## What the three CloudFormation stacks create
+
+- `infra/network.yaml` (`cloudlink-network`): VPC `10.10.0.0/16`, three public subnets (A `10.10.1.0/24`, B `10.10.2.0/24`, web `10.10.3.0/24`), internet gateway, routes, and security groups. It exports IDs used by the other two stacks.
+- `infra/web.yaml` (`cloudlink-web`): one Amazon Linux 2023 web instance at `10.10.3.10`. Its user data installs Python 3.11, Nginx, Gunicorn, and the app from the public GitHub repository, then enables a systemd service. There is no `run.py` or Flask development server in the deployment.
+- `infra/probes.yaml` (`cloudlink-probes`): two Amazon Linux 2023 probe instances with fixed private IPs `10.10.1.10` and `10.10.2.10`. Their baseline security groups permit ICMP and TCP/8080 from each other's security group.
+- A dedicated SSH key generated **on the web instance** at first boot. The probe instances fetch only its public half inside the VPC and authorize it for `ec2-user`. The private half stays on the web instance, outside the repository and browser.
+- Browser HTTP and administrative SSH to the web instance are restricted to `ManagementCidr` (your public IPv4 `/32`). Probe-instance SSH accepts the web instance's security group as a management source. The browser never sends SSH commands or AWS credentials.
+
+The web instance uses private addresses to manage source nodes. The default A-to-B test uses the VPC's automatic local route; the internet gateway is for public management and downloading installation packages. A security group allows or blocks packets, but it does not make a source instance execute a test. CloudLink's separate SSH path handles that.
+
+## Deploy the hosted version
+
+Before deploying, (1) push the current project to a **public GitHub repository** with the branch or tag you will use, (2) start the Academy sandbox in `us-east-1`, (3) confirm that its EC2 key pair named `vockey` exists in that Region, and (4) determine the public IPv4 address of the computer that will open the dashboard, expressed as a `/32` CIDR. The `ManagementCidr` value is also the allowed direct SSH source for the probe nodes. Keep `.venv/`, `data/`, credentials, and private keys out of Git.
+
+Upload `network.yaml`, `web.yaml`, and `probes.yaml` from `infra/` to the same CloudShell directory. Run these commands **from that directory**, replacing the sample values. Deploy in order: network, web, probes. An uploaded template by itself changes nothing.
+
+```sh
+for template in network.yaml web.yaml probes.yaml; do
+  aws cloudformation validate-template --template-body "file://$template"
+done
+aws cloudformation deploy \
+  --stack-name cloudlink-network \
+  --template-file network.yaml \
+  --parameter-overrides ManagementCidr=YOUR_PUBLIC_IP/32
+aws cloudformation deploy \
+  --stack-name cloudlink-web \
+  --template-file web.yaml \
+  --parameter-overrides \
+    NetworkStackName=cloudlink-network \
+    RepositoryUrl=https://github.com/YOUR_ACCOUNT/YOUR_REPO.git \
+    RepositoryRef=main
+aws cloudformation deploy \
+  --stack-name cloudlink-probes \
+  --template-file probes.yaml \
+  --parameter-overrides NetworkStackName=cloudlink-network
+aws cloudformation describe-stacks \
+  --stack-name cloudlink-web \
+  --query 'Stacks[0].Outputs' \
+  --output table
 ```
 
-- VPC: `10.20.0.0/16`.
-- Source subnet: `10.20.1.0/24`.
-- Destination subnet: `10.20.2.0/24`.
-- Internet gateway and a public route table serving both subnets.
-- SSH permitted only from the developer's public IPv4 address at setup time.
-- Destination port 8000 permitted from the source security group.
-- Two Amazon Linux 2023 `t3.micro` instances, each with an 8 GB `gp2` root disk.
-- Sandbox key pair: `vockey`. No new IAM user or role is created.
+Open the `WebUrl` output of `cloudlink-web` from the IP covered by `ManagementCidr`. Verify that both probe nodes appear, then choose **Private IP** and try ping and custom TCP port **8080** from A to B. The app does not need Academy credentials once hosted. This lab uses restricted **HTTP**, not HTTPS: do not expose port 80 to the whole internet or enter sensitive data into the dashboard. A later public deployment should add authentication and TLS.
 
-## Recreate the setup in your sandbox - Windows PowerShell
+CloudFormation can report stack creation complete even when EC2 user data fails. If the app is unavailable, check `/var/log/cloud-init-output.log` and `systemctl status cloudlink nginx` on the web instance. A wrong repository URL or branch prevents the app install. The probe nodes wait for the web instance's public SSH key during first boot. If the web instance is replaced and generates a new key, replace or reconfigure the probes so they trust that key. Pushing new commits alone does not update an already-installed instance.
 
-### 1. Get the code
+The UI lets you select node A or B as source, select the destination, choose its private or public address, and run one of five tests: two-packet ICMP ping; HTTP GET `/` on port 80; HTTPS GET `/` on port 443; SSH server-banner check on port 22 without login; or a TCP connection to a chosen port. Any HTTP status code counts as an application response. HTTPS checks the encrypted connection but deliberately does not validate the certificate because the lab connects by IP address; it is **not** a certificate-security test. The initial A/B security groups allow peer ICMP and TCP/8080, so HTTP, HTTPS, and SSH tests between those nodes are expected to fail until the appropriate rules and services are added. A failed probe does not prove there is no route, and a closed service and blocked rule may look similar. CloudLink offers next checks rather than claiming a proven root cause. Results are saved in SQLite on the web instance.
 
-```powershell
-git clone [https://github.com/dong-quan-tran/cloudlink.git](https://github.com/dong-quan-tran/cloudlink.git)
-cd cloudlink
+When finished, delete stacks in reverse order: `cloudlink-probes`, then `cloudlink-web`, then `cloudlink-network`. CloudFormation will not delete or change an exported network value while another stack imports it. These are new stacks, not an update to the older two-node lab. Delete that older stack separately if it still exists and is no longer needed.
+
+## Run locally on your Mac
+
+From the project directory, create the virtual environment if needed and run the app without `run.py`:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+flask --app 'cloudlink.web:create_app' run --host 127.0.0.1 --port 5001
 ```
 
-If already cloned, run `git pull --ff-only` inside the repository. Stop if Git reports local changes or a conflict.
+Open `http://127.0.0.1:5001/`. If the Academy sandbox is not running or its temporary credentials are unavailable to the **same terminal** that starts Flask, the page can load but the instance dropdown cannot list live nodes. Load fresh Academy credentials using the Academy instructions and restart Flask; do not paste credentials into project files. The local app uses the standard AWS SDK credential chain, with `us-east-1` as its default Region. Listing nodes requires EC2 read access; running a test also requires EC2 Instance Connect access and an SSH path from your Mac to the selected source's public IP. If Academy disallows either action, the local mode cannot complete a test even though the hosted mode may still work.
 
-### 2. Check requirements
-
-```powershell
-git --version
-aws --version
-ssh -V
-Get-Command scp
-```
-
-Install Git, Windows OpenSSH Client, or AWS CLI if its check fails. To install AWS CLI:
-
-```powershell
-Start-Process msiexec.exe -ArgumentList '/i [https://awscli.amazonaws.com/AWSCLIV2.msi](https://awscli.amazonaws.com/AWSCLIV2.msi)' -Wait
-```
-
-Complete the installer and reopen your terminal in the repository. Then run `aws --version` again.
-
-### 3. Open your sandbox
-
-In AWS Academy Canvas, open Sandbox environment. Click Start Lab and wait for the green AWS indicator. Open Details > Show to find your temporary CLI credentials. Check the current region in the AWS console; do not switch it.
-
-Confirm your sandbox allows CloudFormation, EC2 and VPC networking, `t3.micro`, and 8 GB `gp2` disks. Our listed sandbox limit is nine instances, including existing instances. IAM is read-only. Session timer is three hours; persistence after a session is still unconfirmed.
-
-### 4. Create your resources
-
-```powershell
-.\scripts\setup-aws.ps1
-```
-
-It prompts for your credentials and region, shows the target account, then asks you to type `SETUP`. It creates or updates the `cloudlink-dev` CloudFormation stack. It saves your resource IDs to ignored file `infrastructure/network.local.json`. No credentials are written to disk by our script.
-
-If PowerShell blocks our scripts, review the script first, then use this terminal-only setting if permitted by your organization:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
-```
-
-Do not run setup to duplicate Johnny's manual environment. It stops if it finds an existing manual CloudLink VPC. Existing manual resources are not imported into CloudFormation.
-
-### 5. Check AWS API access
-
-Run in the same terminal after setup or connection:
-
-```powershell
-aws sts get-caller-identity --no-cli-pager
-aws ec2 describe-instances --query "Reservations[].Instances[].{ID:InstanceId,State:State.Name,PrivateIP:PrivateIpAddress}" --output table --no-cli-pager
-Get-Content infrastructure/network.local.json
-```
-
-Expected: your sandbox identity and your two running instances. These checks confirm API access, not server-to-server connectivity.
-
-### 6. Download and prepare your SSH key
-
-Download PEM from your sandbox's Details > Show. Save it outside the repository. Paste this block and enter its actual downloaded path:
-
-```powershell
-& {
-    $ErrorActionPreference = 'Stop'
-    $download = (Read-Host 'Full path to your downloaded sandbox PEM').Trim('"')
-    if (-not (Test-Path -LiteralPath $download -PathType Leaf)) { throw 'PEM file not found.' }
-    $key = Join-Path $env:USERPROFILE '.ssh/cloudlink.pem'
-    New-Item -ItemType Directory -Force (Split-Path $key -Parent) | Out-Null
-    if (Test-Path $key) {
-        if ((Read-Host 'Replace the existing local cloudlink.pem? Type REPLACE') -cne 'REPLACE') { throw 'Cancelled.' }
-    }
-    Copy-Item -LiteralPath $download -Destination $key -Force
-    icacls.exe $key /reset
-    if ($LASTEXITCODE -ne 0) { throw 'Permission reset failed.' }
-    $me = whoami
-    icacls.exe $key /grant:r "${me}:(R)"
-    if ($LASTEXITCODE -ne 0) { throw 'Permission update failed.' }
-    icacls.exe $key /inheritance:r
-    if ($LASTEXITCODE -ne 0) { throw 'Permission update failed.' }
-}
-```
-
-The key must belong to your sandbox's `vockey`, not another teammate's sandbox.
-
-### 7. Verify both servers and the private connection
-
-```powershell
-.\scripts\verify-aws.ps1
-```
-
-The helper checks account/region, refreshes instance addresses from EC2, checks both servers are running, waits for destination startup, checks its service, and sends a request from source to destination. It does not create resources or modify security rules. First-time SSH connections may ask you to trust the host. Check the address against your EC2 console; never disable host-key checking to bypass a warning.
-
-Expected final output:
-
-```text
-PASS: source reached destination on private TCP port 8000.
-```
-
-Expected HTTP body:
-
-```text
-CloudLink destination is healthy
-```
-
-Record your own result before marking setup verified. Johnny's earlier result does not verify a fresh teammate deployment.
-
-## Reconnect next time - no rebuild
-
-Start the sandbox and enter fresh credentials in your repo terminal:
-
-```powershell
-.\scripts\connect-aws.ps1
-aws sts get-caller-identity --no-cli-pager
-.\scripts\verify-aws.ps1
-```
-
-Connection credentials apply to this terminal and child processes only. New terminal or expired credentials means reconnect. SSH keys are separate from CLI credentials. Public IPs can change; the verification helper refreshes them from EC2. If instances are stopped, inspect their state and start only your own project instances; see [operations](docs/operations.md).
-
-## Separate sandboxes and settings
-
-GitHub access shares code, not AWS access. Each teammate creates a separate copy using their own credentials. IDs, IPs and the selected latest Amazon Linux image can differ.
-
-- `infrastructure/network.json`: Johnny's original resource record; do not use it in another account.
-- `infrastructure/network.local.json`: your own ignored settings.
-- For Johnny's existing environment only, follow the local-file instructions in [operations](docs/operations.md). Do not rebuild it just to get a local file.
-
-Repeat setup runs update the named stack; they do not fully reset files or manually changed settings. No app or AWS-read role for the app is configured yet.
-
-## Continue the project
-
-1. Joel verifies his recreated environment.
-2. Johnny runs one controlled failure at a time, restores the baseline and saves evidence.
-3. Joel builds the app using the source server as the probe location.
-4. Agree on app run commands and how it will read AWS settings with approved temporary access.
-5. Test app findings against actual controlled failures.
-
-Do not commit credentials or assume an EC2 instance automatically has AWS API permissions. IAM is read-only in our sandbox; app API access remains an integration task.
-
-## Guides and files
-
-- [AWS connection](docs/aws-connection.md): sign-in and checks.
-- [Operations](docs/operations.md): manual checks, service controls, failures, troubleshooting and cleanup.
-- [Joel handoff](docs/joel-update.md).
-- [Scenario checklist](docs/test-scenarios.md).
-- [Original baseline evidence](docs/baseline-result.md).
-- `scripts/setup-aws.ps1`: deployment driver.
-- `scripts/connect-aws.ps1`: interactive temporary credentials.
-- `scripts/verify-aws.ps1`: current AWS/SSH/HTTP checks.
-- `infrastructure/cloudlink.yaml`: complete development resource template.
-- `infrastructure/setup-destination.sh`: standalone destination service setup, already used in Johnny's manual environment. The template includes equivalent startup commands.
-
-## Safety and cleanup
-
-Never commit keys, tokens, passwords, or local settings. Keep the test HTTP service limited to its dedicated directory; it is not a production server. Use only dedicated project resources. See [operations](docs/operations.md) before deleting anything. CloudFormation cleanup does not remove Johnny's separately created manual environment.
+Run checks with `python -m unittest discover -s tests -v`. Press `Ctrl+C` in the Flask terminal to stop the local server.
