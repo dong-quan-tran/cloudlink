@@ -202,6 +202,24 @@ Resources:
       ToPort: 22
       SourceSecurityGroupId: !Ref WebSecurityGroup
 
+  NodeASshFromB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroupA
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref SecurityGroupB
+
+  NodeBSshFromA:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroupB
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref SecurityGroupA
+
   NodeAHttpFromB:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
