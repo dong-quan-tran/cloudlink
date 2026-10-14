@@ -1,8 +1,8 @@
-# CloudLink
+﻿# CloudLink
 
 CloudLink will test connections between AWS servers, explain likely problems, and save results. It gives guidance; it will not automatically change cloud settings.
 
-## Status — October 14, 2026
+## Status â€” October 14, 2026
 
 | Work | Status |
 |---|---|
@@ -39,7 +39,7 @@ Source -- private IP / TCP 8000 --> destination test HTTP service
 - Two Amazon Linux 2023 `t3.micro` instances, each with an 8 GB `gp2` root disk.
 - Sandbox key pair: `vockey`. No new IAM user or role is created.
 
-## Recreate the setup in your sandbox — Windows PowerShell
+## Recreate the setup in your sandbox â€” Windows PowerShell
 
 ### 1. Get the code
 
@@ -150,7 +150,7 @@ CloudLink destination is healthy
 
 Record your own result before marking setup verified. Johnny's earlier result does not verify a fresh teammate deployment.
 
-## Reconnect next time — no rebuild
+## Reconnect next time â€” no rebuild
 
 Start the sandbox and enter fresh credentials in your repo terminal:
 
@@ -186,11 +186,9 @@ Do not commit credentials or assume an EC2 instance automatically has AWS API pe
 
 - [AWS connection](docs/aws-connection.md): sign-in and checks.
 - [Operations](docs/operations.md): manual checks, service controls, failures, troubleshooting and cleanup.
-- [Teammate recreation notes](docs/recreate-setup.md).
 - [Joel handoff](docs/joel-update.md).
 - [Scenario checklist](docs/test-scenarios.md).
 - [Original baseline evidence](docs/baseline-result.md).
-- [Original infrastructure status](infrastructure/README.md).
 - `scripts/setup-aws.ps1`: deployment driver.
 - `scripts/connect-aws.ps1`: interactive temporary credentials.
 - `scripts/verify-aws.ps1`: current AWS/SSH/HTTP checks.
@@ -200,3 +198,4 @@ Do not commit credentials or assume an EC2 instance automatically has AWS API pe
 ## Safety and cleanup
 
 Never commit keys, tokens, passwords, or local settings. Keep the test HTTP service limited to its dedicated directory; it is not a production server. Use only dedicated project resources. See [operations](docs/operations.md) before deleting anything. CloudFormation cleanup does not remove Johnny's separately created manual environment.
+
