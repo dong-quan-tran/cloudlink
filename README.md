@@ -20,7 +20,3 @@ CloudLink is intended for junior cloud administrators, application developers, a
 The first version is an AWS Academy lab with a CloudLink web instance and two test instances in separate subnets of the same VPC. The web instance reaches the selected source over a separate management connection; the source runs the chosen test against the destination. The interface currently lists these two configured lab nodes, not every instance in an AWS account. Testing arbitrary private networks, peered VPCs, and additional instances is future work.
 
 The two-node baseline has been tested manually for ping and TCP port 8080. The new hosted, three-stack version has **not yet been verified end to end**. It is intended for a restricted lab, not public production use: the dashboard currently uses HTTP and has no user authentication.
-
-## Try CloudLink
-
-See the [AWS Academy deployment and testing guide](docs/TESTING.md) for the first live test, expected results, troubleshooting, and cleanup. The guide also explains the difference between the local preview and the hosted app.
