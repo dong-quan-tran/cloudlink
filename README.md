@@ -1,36 +1,50 @@
 ﻿# CloudLink
 
-A tool for testing cloud connectivity and explaining likely failures.
-CloudLink provides guidance; it does not automatically change cloud settings.
+CloudLink tests connections between AWS servers and gives troubleshooting guidance.
+It will not automatically change AWS settings.
 
 ## Team
-- Johnny: AWS network, test servers, failure scenarios, and setup docs.
-- Joel: application, dashboard, probes, diagnostic rules, and result storage.
+- Johnny: AWS network, servers, failure tests, and setup docs.
+- Joel: app, dashboard, connection tests, and saved results.
 
-## Planned first version
-- Two AWS EC2 instances: source and destination.
-- TCP connection tests to destination port 8000.
-- Security-group checks.
-- Saved results for before/after comparisons.
+## Current status
+The test network is working.
+The first source-to-destination connection test passed.
+Controlled failure tests have not started.
+App integration has not been verified.
 
-## Current progress
-- Local Git repository created.
-- AWS CLI installed and sandbox access verified.
+## Completed
+- GitHub repository created; Joel invited.
+- AWS sandbox access configured.
 - VPC and two subnets created.
-- Resource IDs saved in infrastructure/network.json.
+- Internet gateway and public routing configured.
+- Source and destination security groups created.
+- Two Amazon Linux EC2 servers launched.
+- SSH access verified for both servers.
+- Destination HTTP service running on TCP port 8000.
+- Source reached destination private IP 10.20.2.151:8000.
 
-## Not completed
-- Internet gateway and route configuration.
-- Security groups.
-- EC2 instances.
-- Healthy connection test.
-- Application integration.
+## Next tasks
+1. Stop the test service and confirm failure.
+2. Restart it and confirm recovery.
+3. Test blocked port and wrong source range.
+4. Test a stopped destination instance.
+5. Save each result and restore the healthy setup.
+6. Finish repeatable setup and cleanup scripts.
+7. Test Joel's app against the network.
 
 ## Open questions
 - Does the sandbox keep resources between sessions?
-- How will both teammates access the same AWS environment?
-- Confirm the application interface with Joel.
+- How should both teammates access the AWS environment?
+
+## Files
+- infrastructure/network.json: AWS resource IDs.
+- infrastructure/setup-destination.sh: test service setup.
+- infrastructure/README.md: network details.
+- docs/baseline-result.md: successful connection test.
+- docs/test-scenarios.md: failure-test checklist.
+- docs/joel-update.md: team handoff.
 
 ## Safety
 Never commit AWS credentials, SSH keys, or passwords.
-Use only the dedicated CloudLink test resources.
+Use only the dedicated CloudLink resources.

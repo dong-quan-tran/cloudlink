@@ -1,10 +1,10 @@
 ﻿# Controlled Test Scenarios
 
-All scenarios are planned, not yet executed.
+T01 passed. Controlled failure tests have not started.
 
 | ID | Scenario | Change | Expected result | Status |
 |---|---|---|---|---|
-| T01 | Healthy baseline | Service running; intended traffic allowed | TCP connection succeeds | Not run |
+| T01 | Healthy baseline | Service running; intended traffic allowed | TCP connection succeeds | Passed |
 | T02 | Blocked port | Remove destination permission for port 8000 | Probe fails; configuration check flags missing permission | Not run |
 | T03 | Wrong source range | Replace matching source range with a nonmatching range | Probe fails; configuration check flags mismatch | Not run |
 | T04 | Service stopped | Stop destination service | Probe fails; avoid claiming a confirmed cloud-network blocker | Not run |
@@ -33,3 +33,4 @@ All scenarios are planned, not yet executed.
 - Evidence:
 - Restoration steps:
 - Baseline restored:
+

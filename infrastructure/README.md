@@ -1,33 +1,50 @@
-﻿# CloudLink Infrastructure
+﻿# Infrastructure Status
 
 ## Environment
-- AWS Academy Cloud Architecting Sandbox
-- Region: us-east-1
-- Session timer: 3 hours
-- Resource persistence: not confirmed
-- IAM access: read-only
+- AWS Academy Cloud Architecting Sandbox.
+- Region: us-east-1.
+- Session timer: 3 hours.
+- Resource persistence: not confirmed.
+- IAM: read-only.
 
-## Network created
-- VPC: 10.20.0.0/16
-- Source subnet: 10.20.1.0/24
-- Destination subnet: 10.20.2.0/24
+## Network
+- VPC: 10.20.0.0/16.
+- Source subnet: 10.20.1.0/24.
+- Destination subnet: 10.20.2.0/24.
+- Internet gateway attached.
+- Both subnets use the public route table.
+- Resource IDs are saved in network.json.
 
-Resource IDs are in network.json.
+## Servers
+| Role | Instance ID | Private IP |
+|---|---|---|
+| Source | i-0e4cb59f00340b267 | 10.20.1.33 |
+| Destination | i-0f32c4732129523c5 | 10.20.2.151 |
 
-## Planned servers
-- Source: runs the connection probe.
-- Destination: runs a test service on TCP port 8000.
-- Test traffic will use the destination's private IP.
+Both servers were running at the last verified test.
+SSH access worked for both.
+
+## Security rules
+- SSH port 22 allowed from Johnny's public IP at setup time.
+- Destination TCP port 8000 allowed from the source security group.
+
+## Test service
+- Destination service: cloudlink-test.
+- Port: 8000.
+- Setup script: setup-destination.sh.
+- Healthy response: CloudLink destination is healthy.
+
+## Verified result
+The source reached http://10.20.2.151:8000/.
+No controlled failure tests have been run yet.
 
 ## Remaining work
-1. Configure internet access needed for server setup and SSH.
-2. Create separate source and destination security groups.
-3. Launch two permitted Amazon Linux instances.
-4. Start the destination service.
-5. Verify the healthy connection.
-6. Test one failure at a time and restore the baseline.
+- Run and document failure tests.
+- Verify recovery after each test.
+- Finish repeatable network setup and cleanup.
+- Confirm sandbox persistence and shared access.
+- Help Joel test the app.
 
-## Session access
-CLI credentials are entered into the local terminal.
-Refresh them when they expire or when opening a new terminal.
-Do not save them in this repository.
+## Credentials
+Keep credentials and SSH keys outside the repository.
+Local CLI credentials must be refreshed when expired or in a new terminal.
