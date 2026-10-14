@@ -19,4 +19,6 @@ CloudLink is intended for junior cloud administrators, application developers, a
 
 The first version is an AWS Academy lab with a CloudLink web instance and two test instances in separate subnets of the same VPC. The web instance reaches the selected source over a separate management connection; the source runs the chosen test against the destination. The interface currently lists these two configured lab nodes, not every instance in an AWS account. Testing arbitrary private networks, peered VPCs, and additional instances is future work.
 
-The two-node baseline has been tested manually for ping and TCP port 8080. The new hosted, three-stack version has **not yet been verified end to end**. It is intended for a disposable lab, not production use: the dashboard uses unauthenticated HTTP on a web port that is public by default. Administrative SSH remains limited to a specified `/32` address.
+The hosted, three-stack lab has been deployed and its web dashboard and private-IP ping tests have been verified. TCP port 8080 is available on each probe node; HTTP and HTTPS on ports 80 and 443 are not. Peer-to-peer SSH is blocked by default so CloudLink can demonstrate a protocol-specific failure even while ping works. The lab is disposable, not production-ready: the dashboard uses unauthenticated HTTP on a web port that is public by default. Administrative SSH remains limited to a specified `/32` address.
+
+For AWS Academy setup, see [the lab deployment guide](infra/README.md).
