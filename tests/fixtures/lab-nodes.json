@@ -1,0 +1,20 @@
+[
+  {
+    "instance_id": "node-a",
+    "name": "CloudLink-Node-A",
+    "private_ip": "10.10.1.10",
+    "public_ip": null,
+    "vpc_id": "lab-vpc",
+    "subnet_id": "subnet-a",
+    "security_group_ids": ["lab-sg-a"]
+  },
+  {
+    "instance_id": "node-b",
+    "name": "CloudLink-Node-B",
+    "private_ip": "10.10.2.10",
+    "public_ip": null,
+    "vpc_id": "lab-vpc",
+    "subnet_id": "subnet-b",
+    "security_group_ids": ["lab-sg-b"]
+  }
+]

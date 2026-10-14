@@ -1,21 +1,19 @@
-﻿
-# Credentials and private keys
-.aws/
 .env
 .env.*
 !.env.example
+.aws/
+credentials
 *.pem
 *.ppk
-credentials
+*.key
+id_ed25519*
+*.sqlite3
 *tfstate*
 *.tfvars
-
-# Local development files
-.venv/
-venv/
 __pycache__/
 *.pyc
+.venv/
+venv/
 node_modules/
 .DS_Store
-
-infrastructure/network.local.json
+data/

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="cloudlink-token" content="{{ csrf_token }}">
+  <title>CloudLink · Network troubleshooting</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <script defer src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">↗</span><span>CloudLink</span></div>
+      <div class="side-label">WORKSPACE</div>
+      <div class="nav-item active"><span>◉</span> Connectivity lab</div>
+      <div class="sidebar-bottom">
+        <div class="environment"><span class="live-dot"></span><span>AWS Academy sandbox</span></div>
+        <p>Hosted app · us-east-1<br>Two probe-node MVP</p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"><span>Workspace <span class="crumb">/</span> Connectivity lab</span><span class="top-pill">Same-VPC test environment</span></header>
+      <div class="content">
+        <div class="eyebrow">NETWORK DIAGNOSTICS</div>
+        <div class="page-heading">
+          <div><h1>Test a connection</h1><p>Select two running lab instances. CloudLink runs the probe <em>from</em> the source instance.</p></div>
+          <button class="quiet-button" id="refresh" type="button">↻ &nbsp; Refresh instances</button>
+        </div>
+
+        <section class="card test-card" aria-labelledby="setup-title">
+          <div class="card-title-row"><h2 id="setup-title">New connectivity test</h2><span class="step">01 / 02</span></div>
+          <div class="network-path">
+            <div class="endpoint">
+              <label for="source">SOURCE INSTANCE</label>
+              <select id="source" required><option value="">Loading instances…</option></select>
+              <p>CloudLink connects here to run the test.</p>
+            </div>
+            <div class="connection-line"><span class="line"></span><span class="direction">→</span><span class="line"></span></div>
+            <div class="endpoint">
+              <label for="destination">DESTINATION INSTANCE</label>
+              <select id="destination" required><option value="">Loading instances…</option></select>
+              <p>This instance receives the probe traffic.</p>
+            </div>
+          </div>
+          <div class="test-options">
+            <div class="option-field"><label for="address-type">DESTINATION ADDRESS</label><select id="address-type"><option value="private">Private IP (recommended)</option><option value="public">Public IP</option></select></div>
+            <div class="option-field"><label for="test-type">TEST TYPE</label><select id="test-type"><option value="ping">Ping (ICMP)</option><option value="http">HTTP (port 80)</option><option value="https">HTTPS (port 443)</option><option value="ssh">SSH banner (port 22)</option><option value="tcp">Custom TCP port</option></select></div>
+            <div class="option-field port-option" id="port-option" hidden><label for="tcp-port">TCP PORT</label><input id="tcp-port" type="number" min="1" max="65535" value="8080" inputmode="numeric"></div>
+          </div>
+          <p class="test-description" id="test-description">Sends two ICMP echo requests from the source. A failed ping does not prove that other traffic is blocked.</p>
+          <div class="card-footer"><span>Read-only test. CloudLink does not change network settings.</span><button id="run-test" class="primary-button" type="button" disabled>Run connection test <span>→</span></button></div>
+        </section>
+
+        <div id="notice" class="notice" role="status" hidden></div>
+
+        <section class="card result-card" aria-labelledby="result-title">
+          <div class="card-title-row"><h2 id="result-title">Latest result</h2><span class="step">02 / 02</span></div>
+          <div id="result-empty" class="empty-state"><div class="empty-icon">⌁</div><h3>No test run yet</h3><p>Choose a source and destination above to see the connection status and next steps.</p></div>
+          <div id="result-content" hidden>
+            <div class="result-overview"><span id="result-badge" class="result-badge"></span><span id="result-time" class="result-time"></span></div>
+            <h3 id="result-summary"></h3><p id="result-route" class="result-route"></p>
+            <div class="metrics single"><div><span id="check-label" class="metric-label">TEST</span><strong id="check-status">—</strong><small id="check-detail"></small></div></div>
+            <div class="recommendation"><span class="recommendation-label">WHAT TO CHECK NEXT</span><p id="result-recommendation"></p></div>
+          </div>
+        </section>
+
+        <section class="history-section" aria-labelledby="history-title"><div class="section-heading"><div><h2 id="history-title">Recent tests</h2><p>Saved locally for before-and-after comparison.</p></div></div><div id="history" class="history-list"><div class="history-empty">No saved tests yet.</div></div></section>
+        <p class="fine-print">This version lists the two configured lab nodes. Other instances and peered VPCs require inventory, management access, and the appropriate routes.</p>
+      </div>
+    </main>
+  </div>
+</body>
+</html>
