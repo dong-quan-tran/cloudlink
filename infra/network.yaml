@@ -6,7 +6,13 @@ Parameters:
     Type: String
     AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/32$'
     ConstraintDescription: Supply one public IPv4 address followed by /32
-    Description: Public IPv4 address allowed to open the demo dashboard and SSH to lab instances
+    Description: Public IPv4 address allowed to SSH to lab instances
+  WebClientCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$'
+    ConstraintDescription: Supply an IPv4 CIDR range, such as 0.0.0.0/0 or 203.0.113.10/32
+    Description: IPv4 range allowed to open the demo dashboard on HTTP port 80
 
 Resources:
   LabVpc:
@@ -149,7 +155,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: !Ref ManagementCidr
+          CidrIp: !Ref WebClientCidr
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
