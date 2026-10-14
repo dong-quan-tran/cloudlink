@@ -1,0 +1,19 @@
+﻿
+# Credentials and private keys
+.aws/
+.env
+.env.*
+!.env.example
+*.pem
+*.ppk
+credentials
+*tfstate*
+*.tfvars
+
+# Local development files
+.venv/
+venv/
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
