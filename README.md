@@ -1,175 +1,202 @@
-﻿# CloudLink
+# CloudLink
 
-CloudLink will test connections between AWS servers, explain likely
-problems, and save results for before/after comparisons.
+CloudLink will test connections between AWS servers, explain likely problems, and save results. It gives guidance; it will not automatically change cloud settings.
 
-It provides guidance only. It will not automatically change AWS settings.
+## Status — October 14, 2026
 
-## Current status
+| Work | Status |
+|---|---|
+| Johnny's VPC, subnets, internet routing, security groups | Created |
+| Two EC2 servers and SSH access | Verified October 13 |
+| Destination Python test service on port 8000 | Verified October 13 |
+| Source-to-destination HTTP baseline | Passed October 13 |
+| Automated CloudFormation recreation | Added; not yet verified in a teammate's sandbox |
+| Connection and verification helper scripts | Added; runtime testing pending |
+| Controlled failure scenarios | Planned; not run |
+| CloudLink app, dashboard, diagnostics, saved history | Not yet integrated |
 
-Johnny's test environment is working:
-- VPC, two subnets, internet routing, and security groups created.
-- Two Amazon Linux EC2 servers launched.
-- SSH access verified for both.
-- Destination test service running on TCP port 8000.
-- Source-to-destination HTTP test passed.
-
-Controlled failure tests have not started.
-The actual CloudLink app and dashboard have not been integrated.
-The new automated setup still needs testing in a teammate's sandbox.
-
-These results describe the last verified session, not a live status check.
+These are recorded results, not a live AWS status check. The Python HTTP server is a test target, not the CloudLink app.
 
 ## Team
 
-- Johnny: AWS infrastructure, test servers, failure tests, and setup docs.
-- Joel: application, dashboard, probes, diagnostic rules, and result storage.
+- Johnny: AWS network, servers, failure scenarios, setup and test evidence.
+- Joel: app, dashboard, connection probes, AWS configuration checks and result storage.
 
-## Set up your own AWS environment
+## What we built
 
-These instructions are for Windows PowerShell.
+```text
+Laptop -- AWS CLI credentials --> sandbox AWS APIs
+Laptop -- SSH key / port 22 --> source and destination public IPs
+Source -- private IP / TCP 8000 --> destination test HTTP service
+```
 
-### 1. Clone the repository
+- VPC: `10.20.0.0/16`.
+- Source subnet: `10.20.1.0/24`.
+- Destination subnet: `10.20.2.0/24`.
+- Internet gateway and a public route table serving both subnets.
+- SSH permitted only from the developer's public IPv4 address at setup time.
+- Destination port 8000 permitted from the source security group.
+- Two Amazon Linux 2023 `t3.micro` instances, each with an 8 GB `gp2` root disk.
+- Sandbox key pair: `vockey`. No new IAM user or role is created.
 
-    git clone https://github.com/dong-quan-tran/cloudlink.git
-    cd cloudlink
+## Recreate the setup in your sandbox — Windows PowerShell
 
-If you already cloned it:
+### 1. Get the code
 
-    git pull
+```powershell
+git clone https://github.com/dong-quan-tran/cloudlink.git
+cd cloudlink
+```
 
-### 2. Check AWS CLI
+If already cloned, run `git pull --ff-only` inside the repository. Stop if Git reports local changes or a conflict.
 
-    aws --version
+### 2. Check requirements
 
-If AWS CLI is missing, install it:
+```powershell
+git --version
+aws --version
+ssh -V
+Get-Command scp
+```
 
-    Start-Process msiexec.exe -ArgumentList '/i https://awscli.amazonaws.com/AWSCLIV2.msi' -Wait
+Install Git, Windows OpenSSH Client, or AWS CLI if its check fails. To install AWS CLI:
 
-Follow the installer, then close and reopen your terminal.
-Run aws --version again.
+```powershell
+Start-Process msiexec.exe -ArgumentList '/i https://awscli.amazonaws.com/AWSCLIV2.msi' -Wait
+```
 
-### 3. Start your sandbox
+Complete the installer and reopen your terminal in the repository. Then run `aws --version` again.
 
-- Open AWS Academy Canvas.
-- Open Sandbox environment.
-- Click Start Lab and wait for the AWS indicator to turn green.
-- Open Details > Show to find your AWS CLI credentials.
-- Check the current region in the AWS console. Do not change it.
+### 3. Open your sandbox
 
-### 4. Create your test environment
+In AWS Academy Canvas, open Sandbox environment. Click Start Lab and wait for the green AWS indicator. Open Details > Show to find your temporary CLI credentials. Check the current region in the AWS console; do not switch it.
 
-From the repository's PowerShell terminal:
+Confirm your sandbox allows CloudFormation, EC2 and VPC networking, `t3.micro`, and 8 GB `gp2` disks. Our listed sandbox limit is nine instances, including existing instances. IAM is read-only. Session timer is three hours; persistence after a session is still unconfirmed.
 
-    .\scripts\setup-aws.ps1
+### 4. Create your resources
 
-The script asks for:
-- Your AWS access key ID.
-- Your AWS secret access key.
-- Your AWS session token.
-- Your sandbox region.
+```powershell
+.\scripts\setup-aws.ps1
+```
 
-Enter values only, without labels or quotes.
-Confirm the displayed AWS account is yours.
-Type SETUP when prompted to create the resources.
+It prompts for your credentials and region, shows the target account, then asks you to type `SETUP`. It creates or updates the `cloudlink-dev` CloudFormation stack. It saves your resource IDs to ignored file `infrastructure/network.local.json`. No credentials are written to disk by our script.
 
-If Windows blocks the script, run this for the current terminal only:
+If PowerShell blocks our scripts, review the script first, then use this terminal-only setting if permitted by your organization:
 
-    Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+```
 
-Then run the script again.
+Do not run setup to duplicate Johnny's manual environment. It stops if it finds an existing manual CloudLink VPC. Existing manual resources are not imported into CloudFormation.
 
-### 5. Check your local resource details
+### 5. Check AWS API access
 
-    Get-Content infrastructure/network.local.json
+Run in the same terminal after setup or connection:
 
-The setup creates:
-- VPC: 10.20.0.0/16.
-- Source subnet: 10.20.1.0/24.
-- Destination subnet: 10.20.2.0/24.
-- Internet gateway and public routing.
-- Separate source and destination security groups.
-- SSH access from your public IP.
-- Destination port 8000 access from the source security group.
-- Two Amazon Linux 2023 t3.micro servers with 8 GB gp2 disks.
-- A Python test service on the destination.
+```powershell
+aws sts get-caller-identity --no-cli-pager
+aws ec2 describe-instances --query "Reservations[].Instances[].{ID:InstanceId,State:State.Name,PrivateIP:PrivateIpAddress}" --output table --no-cli-pager
+Get-Content infrastructure/network.local.json
+```
 
-This creates the test environment, not the CloudLink app.
+Expected: your sandbox identity and your two running instances. These checks confirm API access, not server-to-server connectivity.
 
-### 6. Verify the setup
+### 6. Download and prepare your SSH key
 
-Download your own sandbox PEM key from Details > Show.
-Keep it outside the repository.
+Download PEM from your sandbox's Details > Show. Save it outside the repository. Paste this block and enter its actual downloaded path:
 
-Use your own addresses from network.local.json to connect over SSH.
-From the source server, request the destination's private IP on port 8000.
+```powershell
+& {
+    $ErrorActionPreference = 'Stop'
+    $download = (Read-Host 'Full path to your downloaded sandbox PEM').Trim('"')
+    if (-not (Test-Path -LiteralPath $download -PathType Leaf)) { throw 'PEM file not found.' }
+    $key = Join-Path $env:USERPROFILE '.ssh/cloudlink.pem'
+    New-Item -ItemType Directory -Force (Split-Path $key -Parent) | Out-Null
+    if (Test-Path $key) {
+        if ((Read-Host 'Replace the existing local cloudlink.pem? Type REPLACE') -cne 'REPLACE') { throw 'Cancelled.' }
+    }
+    Copy-Item -LiteralPath $download -Destination $key -Force
+    icacls.exe $key /reset
+    if ($LASTEXITCODE -ne 0) { throw 'Permission reset failed.' }
+    $me = whoami
+    icacls.exe $key /grant:r "${me}:(R)"
+    if ($LASTEXITCODE -ne 0) { throw 'Permission update failed.' }
+    icacls.exe $key /inheritance:r
+    if ($LASTEXITCODE -ne 0) { throw 'Permission update failed.' }
+}
+```
 
-Expected response:
+The key must belong to your sandbox's `vockey`, not another teammate's sandbox.
 
-    CloudLink destination is healthy
+### 7. Verify both servers and the private connection
 
-The automated setup is not considered verified until this test passes.
-See docs/recreate-setup.md for more details.
+```powershell
+.\scripts\verify-aws.ps1
+```
 
-## Connect without rebuilding
+The helper checks account/region, refreshes instance addresses from EC2, checks both servers are running, waits for destination startup, checks its service, and sends a request from source to destination. It does not create resources or modify security rules. First-time SSH connections may ask you to trust the host. Check the address against your EC2 console; never disable host-key checking to bypass a warning.
 
-To connect a new PowerShell terminal to your sandbox:
+Expected final output:
 
-    .\scripts\connect-aws.ps1
+```text
+PASS: source reached destination on private TCP port 8000.
+```
 
-This only sets credentials and checks AWS access.
-It does not create infrastructure.
+Expected HTTP body:
 
-Credentials apply to the current terminal and its child processes.
-Run it again in a new terminal or when credentials expire.
+```text
+CloudLink destination is healthy
+```
 
-## Separate sandboxes
+Record your own result before marking setup verified. Johnny's earlier result does not verify a fresh teammate deployment.
 
-Each teammate uses their own sandbox and credentials.
-The network layout matches, but AWS IDs and IPs differ.
+## Reconnect next time — no rebuild
 
-- infrastructure/network.json contains Johnny's original resource IDs.
-- infrastructure/network.local.json contains your own setup's IDs.
-- Do not use Johnny's resource IDs in your separate sandbox.
-- Do not commit your local settings file.
+Start the sandbox and enter fresh credentials in your repo terminal:
 
-## Setup limits
+```powershell
+.\scripts\connect-aws.ps1
+aws sts get-caller-identity --no-cli-pager
+.\scripts\verify-aws.ps1
+```
 
-- The script requires the sandbox's existing vockey key pair.
-- It needs room for two instances under the sandbox's nine-instance limit.
-- Repeat runs update the same cloudlink-dev CloudFormation stack.
-- They do not fully reset server files or manual changes.
-- The script stops if it finds an existing manual CloudLink VPC.
-- If setup fails, inspect CloudFormation stack events before retrying.
-- The selected Amazon Linux version may differ from Johnny's original image.
-- Sandbox resource persistence between sessions is not confirmed.
+Connection credentials apply to this terminal and child processes only. New terminal or expired credentials means reconnect. SSH keys are separate from CLI credentials. Public IPs can change; the verification helper refreshes them from EC2. If instances are stopped, inspect their state and start only your own project instances; see [operations](docs/operations.md).
 
-## Next project tasks
+## Separate sandboxes and settings
 
-1. Verify the automated setup in Joel's sandbox.
-2. Stop the destination service and test failure/recovery.
-3. Test blocked port and wrong source range.
-4. Test a stopped destination instance.
-5. Save results and restoration steps.
-6. Add cleanup instructions.
-7. Integrate and test Joel's CloudLink app.
+GitHub access shares code, not AWS access. Each teammate creates a separate copy using their own credentials. IDs, IPs and the selected latest Amazon Linux image can differ.
 
-## Repository files
+- `infrastructure/network.json`: Johnny's original resource record; do not use it in another account.
+- `infrastructure/network.local.json`: your own ignored settings.
+- For Johnny's existing environment only, follow the local-file instructions in [operations](docs/operations.md). Do not rebuild it just to get a local file.
 
-- scripts/connect-aws.ps1: prompts for credentials and checks access.
-- scripts/setup-aws.ps1: creates or updates the development environment.
-- infrastructure/cloudlink.yaml: CloudFormation resource template.
-- infrastructure/setup-destination.sh: standalone test-service setup.
-- infrastructure/network.json: Johnny's original resource IDs.
-- infrastructure/README.md: original infrastructure status.
-- docs/recreate-setup.md: teammate setup guide.
-- docs/aws-connection.md: connection-only guide.
-- docs/baseline-result.md: Johnny's successful baseline test.
-- docs/test-scenarios.md: controlled test checklist.
-- docs/joel-update.md: team handoff details.
+Repeat setup runs update the named stack; they do not fully reset files or manually changed settings. No app or AWS-read role for the app is configured yet.
 
-## Safety
+## Continue the project
 
-Never commit AWS credentials, SSH keys, or passwords.
-Do not share Canvas logins or private keys.
-Create and modify only dedicated CloudLink test resources.
+1. Joel verifies his recreated environment.
+2. Johnny runs one controlled failure at a time, restores the baseline and saves evidence.
+3. Joel builds the app using the source server as the probe location.
+4. Agree on app run commands and how it will read AWS settings with approved temporary access.
+5. Test app findings against actual controlled failures.
+
+Do not commit credentials or assume an EC2 instance automatically has AWS API permissions. IAM is read-only in our sandbox; app API access remains an integration task.
+
+## Guides and files
+
+- [AWS connection](docs/aws-connection.md): sign-in and checks.
+- [Operations](docs/operations.md): manual checks, service controls, failures, troubleshooting and cleanup.
+- [Teammate recreation notes](docs/recreate-setup.md).
+- [Joel handoff](docs/joel-update.md).
+- [Scenario checklist](docs/test-scenarios.md).
+- [Original baseline evidence](docs/baseline-result.md).
+- [Original infrastructure status](infrastructure/README.md).
+- `scripts/setup-aws.ps1`: deployment driver.
+- `scripts/connect-aws.ps1`: interactive temporary credentials.
+- `scripts/verify-aws.ps1`: current AWS/SSH/HTTP checks.
+- `infrastructure/cloudlink.yaml`: complete development resource template.
+- `infrastructure/setup-destination.sh`: standalone destination service setup, already used in Johnny's manual environment. The template includes equivalent startup commands.
+
+## Safety and cleanup
+
+Never commit keys, tokens, passwords, or local settings. Keep the test HTTP service limited to its dedicated directory; it is not a production server. Use only dedicated project resources. See [operations](docs/operations.md) before deleting anything. CloudFormation cleanup does not remove Johnny's separately created manual environment.
