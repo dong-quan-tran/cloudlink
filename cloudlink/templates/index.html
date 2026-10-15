@@ -46,7 +46,7 @@
             </div>
           </div>
           <div class="test-options">
-            <div class="option-field"><label for="address-type">DESTINATION ADDRESS</label><select id="address-type"><option value="private">Private IP (recommended)</option><option value="public">Public IP</option></select></div>
+            <div class="option-field"><span class="field-label">DESTINATION ADDRESS</span><div class="fixed-address">Private IP (same VPC)</div></div>
             <div class="option-field"><label for="test-type">TEST TYPE</label><select id="test-type"><option value="ping">Ping (ICMP)</option><option value="http">HTTP (port 80)</option><option value="https">HTTPS (port 443)</option><option value="ssh">SSH banner (port 22)</option><option value="tcp">Custom TCP port</option></select></div>
             <div class="option-field port-option" id="port-option" hidden><label for="tcp-port">TCP PORT</label><input id="tcp-port" type="number" min="1" max="65535" value="8080" inputmode="numeric"></div>
           </div>

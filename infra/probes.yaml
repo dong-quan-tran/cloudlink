@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudLink pair of same-VPC probe instances
+Description: CloudLink pair of private, same-VPC probe instances
 
 Parameters:
   NetworkStackName:
@@ -140,7 +140,3 @@ Outputs:
     Value: !GetAtt InstanceA.PrivateIp
   NodeBPrivateIp:
     Value: !GetAtt InstanceB.PrivateIp
-  NodeAPublicIp:
-    Value: !GetAtt InstanceA.PublicIp
-  NodeBPublicIp:
-    Value: !GetAtt InstanceB.PublicIp

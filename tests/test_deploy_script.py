@@ -14,7 +14,7 @@ SCRIPT = ROOT / "scripts" / "deploy-sandbox.sh"
 
 
 class DeployScriptTests(unittest.TestCase):
-    def run_script(self, *args: str) -> tuple[subprocess.CompletedProcess[str], str]:
+    def run_script(self, *args: str, public_ips: str = "") -> tuple[subprocess.CompletedProcess[str], str]:
         with tempfile.TemporaryDirectory() as directory:
             bin_dir = Path(directory)
             log_path = bin_dir / "aws.log"
@@ -30,6 +30,7 @@ class DeployScriptTests(unittest.TestCase):
                 "      *NodeAInstanceId*) echo i-node-a ;;\n"
                 "      *NodeBInstanceId*) echo i-node-b ;;\n"
                 "    esac ;;\n"
+                "  'ec2 describe-instances') echo \"$MOCK_PUBLIC_IPS\" ;;\n"
                 "esac\n",
                 encoding="utf-8",
             )
@@ -40,6 +41,7 @@ class DeployScriptTests(unittest.TestCase):
             environment = dict(os.environ)
             environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
             environment["MOCK_AWS_LOG"] = str(log_path)
+            environment["MOCK_PUBLIC_IPS"] = public_ips
             result = subprocess.run(
                 ["bash", str(SCRIPT), *args],
                 cwd=ROOT,
@@ -65,6 +67,11 @@ class DeployScriptTests(unittest.TestCase):
         result, log = self.run_script("--management-cidr", "203.0.113.10/32", "--enable-peer-ssh")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("EnablePeerSsh=true", log)
+
+    def test_warns_if_existing_probes_still_have_public_ips(self) -> None:
+        result, _ = self.run_script("--management-cidr", "203.0.113.10/32", public_ips="198.51.100.10")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Existing probe instance(s) still have public IP(s)", result.stderr)
 
     def test_invalid_management_address_stops_before_aws(self) -> None:
         result, log = self.run_script("--management-cidr", "0.0.0.0/0")

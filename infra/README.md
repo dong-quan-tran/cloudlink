@@ -8,10 +8,14 @@ cd cloudlink
 bash scripts/deploy-sandbox.sh --management-cidr YOUR_COMPUTER_PUBLIC_IP/32
 ```
 
-If the repository is already in CloudShell, run `git pull --ff-only` inside it before the script. You can omit `--management-cidr` and enter the address when prompted. Use the public IPv4 address of **your computer's internet connection**, not the address printed by CloudShell. The `/32` restricts administrative SSH to that one address. The script checks for AWS access and the Academy `vockey` key pair, validates the three templates, then creates or updates `cloudlink-network`, `cloudlink-web`, and `cloudlink-probes` in dependency order. It prints the current web URL at the end; the instance's public IP may change when recreated.
+If the repository is already in CloudShell, run `git pull --ff-only` inside it before the script. You can omit `--management-cidr` and enter the address when prompted. Use the public IPv4 address of **your computer's internet connection**, not the address printed by CloudShell. The `/32` restricts administrative SSH to the web instance. The script checks for AWS access and the Academy `vockey` key pair, validates the three templates, then creates or updates `cloudlink-network`, `cloudlink-web`, and `cloudlink-probes` in dependency order. It prints the current web URL at the end; the instance's public IP may change when recreated.
+
+The network stack gives only the web subnet an internet-gateway route. Probe A and B have separate private subnets and route tables with the VPC-local route only; newly launched probes receive no public IP. CloudLink reaches a selected probe over private SSH, and the probe tests the other node's private IP. The probes download their CloudLink management public key from the web instance over the VPC-local path, so they do not need a NAT gateway during bootstrap. Direct SSH from your computer to a probe is not available in this layout.
 
 The demo dashboard is publicly reachable over unauthenticated HTTP port 80 by default. Do not use real credentials, private data, or production resources in this lab. The app reads its own lab inventory and does not need sandbox credentials pasted into its UI.
 
 By default, ICMP and TCP port 8080 are allowed between the two probe nodes. Peer-to-peer SSH remains blocked, so an SSH banner test should fail even when ping succeeds. To allow the SSH banner test too, rerun with `--enable-peer-ssh`; this adds TCP 22 rules only between the two probe security groups. It does not make port 22 publicly accessible.
+
+Subnet public-IP settings affect new instances only. If you rerun the script against an older deployment whose probes already have public IPs, it warns you; it does not replace those instances automatically. A fresh sandbox deployment gets private probes from the start.
 
 The web application is installed from the selected repository ref only when the web EC2 instance is first created. Updating an existing CloudFormation stack does not automatically reinstall newer application code on that instance.

@@ -28,6 +28,12 @@ class WebTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_lab_form_uses_private_addresses_only(self):
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Private IP (same VPC)", html)
+        self.assertNotIn('id="address-type"', html)
+        self.assertNotIn('<option value="public">', html)
+
     @patch("cloudlink.web.discover_nodes", return_value=NODES)
     def test_instance_list(self, _discover):
         response = self.client.get("/api/instances")
