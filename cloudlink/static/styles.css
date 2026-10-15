@@ -4,6 +4,8 @@
 .test-options>div:nth-child(2){width:115px;flex:none}
 @media(max-width:620px){.test-options>div:nth-child(2){width:100%}}
 .test-options>.option-field{flex:1;width:auto;min-width:0}
+.test-options .field-label{display:block;font-size:10px;font-weight:700;letter-spacing:.12em;color:#768d7b;margin-bottom:10px}
+.test-options .fixed-address{min-height:41px;display:flex;align-items:center;border:1px solid #cedbd0;border-radius:7px;background:#f8faf8;color:#1d3326;padding:10px 11px;font-size:13px;font-weight:700}
 .test-options>.port-option{flex:0 0 130px}
 .port-option[hidden]{display:none}
 .test-description{font-size:12px;line-height:1.5;color:#65786b;margin:-10px 0 20px}

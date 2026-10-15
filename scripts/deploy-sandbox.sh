@@ -15,7 +15,7 @@ usage() {
 Usage: bash scripts/deploy-sandbox.sh [options]
 
 Options:
-  --management-cidr IP/32  Public IP of YOUR computer allowed to SSH to lab EC2 instances.
+  --management-cidr IP/32  Public IP of YOUR computer allowed to SSH to the web instance.
                            If omitted, the script asks for it. Do not use CloudShell's IP.
   --region REGION          AWS region (default: us-east-1).
   --repository-url URL     Public GitHub repository cloned by the web instance.
@@ -100,7 +100,7 @@ printf 'Checking AWS Academy access in %s...\n' "$region"
 account=$(aws sts get-caller-identity "${aws_args[@]}" --query Account --output text)
 aws ec2 describe-key-pairs "${aws_args[@]}" --key-names vockey --query 'KeyPairs[0].KeyName' --output text >/dev/null
 printf 'Using AWS account %s and the lab key pair vockey.\n' "$account"
-printf 'The dashboard will be public on HTTP port 80; administrative SSH is limited to %s.\n' "$management_cidr"
+printf 'The dashboard will be public on HTTP port 80; web-instance SSH is limited to %s.\n' "$management_cidr"
 
 deploy_stack() {
   local name=$1 template=$2
@@ -161,11 +161,18 @@ node_a=$(stack_output cloudlink-probes NodeAInstanceId)
 node_b=$(stack_output cloudlink-probes NodeBInstanceId)
 printf 'Waiting for the probe instances to pass AWS status checks...\n'
 aws ec2 wait instance-status-ok "${aws_args[@]}" --instance-ids "$node_a" "$node_b"
+probe_public_ips=$(aws ec2 describe-instances "${aws_args[@]}" \
+  --instance-ids "$node_a" "$node_b" \
+  --query 'Reservations[].Instances[].PublicIpAddress' --output text)
 
 printf '\nCloudLink stacks deployed. Open: %s\n' "$web_url"
 printf 'Node A: %s\n' "$node_a"
 printf 'Node B: %s\n' "$node_b"
 printf 'Peer-to-peer SSH banner tests enabled: %s\n' "$enable_peer_ssh"
+if [[ -n $probe_public_ips && $probe_public_ips != None ]]; then
+  printf 'WARNING: Existing probe instance(s) still have public IP(s): %s\n' "$probe_public_ips" >&2
+  printf 'Private subnet settings affect new launches only; these probes must be replaced to remove their public IPs. This script does not replace them.\n' >&2
+fi
 printf 'Try A -> B: Ping and custom TCP port 8080. HTTP/HTTPS on 80/443 are intentionally not served by the probe nodes.\n'
 printf 'Probe user-data may still be finishing; if the first test cannot reach the source, retry shortly.\n'
 printf 'On an existing web stack, CloudFormation does not reinstall app code when its template is unchanged.\n'

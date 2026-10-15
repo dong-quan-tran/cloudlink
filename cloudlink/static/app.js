@@ -118,7 +118,7 @@ async function runTest() {
     const response = await fetch('/api/tests', {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-CloudLink-Token': token},
-      body: JSON.stringify({source_id: $('source').value, destination_id: $('destination').value, address_type: $('address-type').value, test_type: $('test-type').value, ...($('test-type').value === 'tcp' ? {port: Number($('tcp-port').value)} : {})}),
+      body: JSON.stringify({source_id: $('source').value, destination_id: $('destination').value, address_type: 'private', test_type: $('test-type').value, ...($('test-type').value === 'tcp' ? {port: Number($('tcp-port').value)} : {})}),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Test failed.');
