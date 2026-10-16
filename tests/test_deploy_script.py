@@ -61,7 +61,23 @@ class DeployScriptTests(unittest.TestCase):
         self.assertLess(log.index("--stack-name cloudlink-web"), log.index("--stack-name cloudlink-probes"))
         self.assertIn("EnablePeerSsh=false", log)
         self.assertIn("ManagementCidr=203.0.113.10/32", log)
+        self.assertIn("AvailabilityZone=us-east-1a", log)
         self.assertIn("http://127.0.0.1/", result.stdout)
+
+    def test_selected_zone_is_passed_to_network_stack(self) -> None:
+        result, log = self.run_script(
+            "--management-cidr", "203.0.113.10/32", "--availability-zone", "us-east-1b"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("AvailabilityZone=us-east-1b", log)
+
+    def test_zone_in_another_region_stops_before_aws(self) -> None:
+        result, log = self.run_script(
+            "--management-cidr", "203.0.113.10/32", "--region", "us-west-2"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must belong to region us-west-2", result.stderr)
+        self.assertEqual(log, "")
 
     def test_peer_ssh_requires_explicit_opt_in(self) -> None:
         result, log = self.run_script("--management-cidr", "203.0.113.10/32", "--enable-peer-ssh")

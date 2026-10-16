@@ -2,6 +2,10 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: CloudLink VPC with a public web subnet and two private probe subnets
 
 Parameters:
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+    Description: Zone supporting t3.micro for all three lab subnets (us-east-1e is unsupported in this sandbox)
   ManagementCidr:
     Type: String
     AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/32$'
@@ -39,6 +43,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref LabVpc
+      AvailabilityZone: !Ref AvailabilityZone
       CidrBlock: 10.10.1.0/24
       MapPublicIpOnLaunch: false
       Tags:
@@ -51,6 +56,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref LabVpc
+      AvailabilityZone: !Ref AvailabilityZone
       CidrBlock: 10.10.2.0/24
       MapPublicIpOnLaunch: false
       Tags:
@@ -63,6 +69,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref LabVpc
+      AvailabilityZone: !Ref AvailabilityZone
       CidrBlock: 10.10.3.0/24
       MapPublicIpOnLaunch: true
       Tags:

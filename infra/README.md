@@ -1,5 +1,9 @@
 # AWS Academy lab deployment
 
+The network template explicitly places all three lab subnets in `us-east-1a` by default. This avoids an automatic placement in a zone that cannot launch `t3.micro`, such as `us-east-1e` in this sandbox. This is a single-zone lab with separate public and private subnets, not a high-availability deployment. For manual uploads, choose `AvailabilityZone` when creating the **network** stack; EC2 inherits its subnet's zone. For the script, use `--availability-zone us-east-1b` to choose another supported zone. If you change `--region`, also select a zone in that region that supports `t3.micro`.
+
+If an existing subnet was created in an unsupported zone, recreate the disposable lab before using the updated network template. In CloudFormation, delete `cloudlink-probes` if present, then the failed `cloudlink-web` stack, then `cloudlink-network`, waiting for each deletion to finish. Recreate network → web → probes in that order, or rerun the deployment script. Deleting the web stack removes its instance and local SQLite history. Changing a subnet's zone requires replacement; an in-place network update with the same CIDR ranges is not a supported migration. The script does not delete stacks for you.
+
 Run this from a fresh AWS Academy CloudShell session in `us-east-1`:
 
 ```bash
