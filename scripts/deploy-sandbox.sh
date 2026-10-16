@@ -5,6 +5,7 @@ set -Eeuo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd -- "$script_dir/.." && pwd)
 region=us-east-1
+availability_zone=us-east-1a
 management_cidr=
 repository_url=https://github.com/dong-quan-tran/cloudlink.git
 repository_ref=main
@@ -18,6 +19,8 @@ Options:
   --management-cidr IP/32  Public IP of YOUR computer allowed to SSH to the web instance.
                            If omitted, the script asks for it. Do not use CloudShell's IP.
   --region REGION          AWS region (default: us-east-1).
+  --availability-zone AZ   Zone supporting t3.micro (default: us-east-1a).
+                           Choose a zone in --region; changing it requires a fresh network.
   --repository-url URL     Public GitHub repository cloned by the web instance.
   --repository-ref REF     Branch or tag installed on a new web instance (default: main).
   --enable-peer-ssh        Allow SSH banner checks between nodes A and B. By default
@@ -32,7 +35,7 @@ HELP
 
 while (($#)); do
   case $1 in
-    --management-cidr|--region|--repository-url|--repository-ref)
+    --management-cidr|--region|--availability-zone|--repository-url|--repository-ref)
       option=$1
       if (($# < 2)); then
         printf 'Missing value for %s\n' "$option" >&2
@@ -41,6 +44,7 @@ while (($#)); do
       case $option in
         --management-cidr) management_cidr=$2 ;;
         --region) region=$2 ;;
+        --availability-zone) availability_zone=$2 ;;
         --repository-url) repository_url=$2 ;;
         --repository-ref) repository_ref=$2 ;;
       esac
@@ -61,6 +65,11 @@ while (($#)); do
       ;;
   esac
 done
+
+if [[ $availability_zone != "$region"[a-z] ]]; then
+  printf 'Availability Zone %s must belong to region %s. Pass --availability-zone, for example %sa.\n' "$availability_zone" "$region" "$region" >&2
+  exit 2
+fi
 
 for program in aws curl python3; do
   if ! command -v "$program" >/dev/null 2>&1; then
@@ -100,6 +109,7 @@ printf 'Checking AWS Academy access in %s...\n' "$region"
 account=$(aws sts get-caller-identity "${aws_args[@]}" --query Account --output text)
 aws ec2 describe-key-pairs "${aws_args[@]}" --key-names vockey --query 'KeyPairs[0].KeyName' --output text >/dev/null
 printf 'Using AWS account %s and the lab key pair vockey.\n' "$account"
+printf 'Using Availability Zone %s for the web and probe subnets.\n' "$availability_zone"
 printf 'The dashboard will be public on HTTP port 80; web-instance SSH is limited to %s.\n' "$management_cidr"
 
 deploy_stack() {
@@ -122,6 +132,7 @@ stack_output() {
 }
 
 deploy_stack cloudlink-network network.yaml \
+  "AvailabilityZone=$availability_zone" \
   "ManagementCidr=$management_cidr" \
   WebClientCidr=0.0.0.0/0 \
   "EnablePeerSsh=$enable_peer_ssh"
