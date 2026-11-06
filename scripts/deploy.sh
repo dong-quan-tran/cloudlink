@@ -11,8 +11,6 @@ repository_url=https://github.com/dong-quan-tran/cloudlink.git
 repository_ref=personal-account-deploy
 enable_peer_ssh=false
 ssh_key_name=
-apply=false
-confirm_account=
 
 usage() {
   cat <<'HELP'
@@ -21,8 +19,6 @@ Usage: bash scripts/deploy.sh [options]
 Options:
   --management-cidr IP/32  Public IP of YOUR computer allowed to SSH to the web instance.
                            If omitted, the script asks for it. Do not use CloudShell's IP.
-  --apply                  Deploy after confirming the displayed AWS account.
-  --confirm-account ID     Explicit account confirmation for non-interactive deployment.
   --key-name NAME          Optional existing administrator EC2 key pair; no key pair is required.
   --repository-url URL     Public GitHub repository cloned by the web instance.
   --repository-ref REF     Branch or tag installed on a new instance (default: personal-account-deploy).
@@ -31,7 +27,6 @@ Options:
   --help                   Show this help.
 
 Region and Availability Zone are fixed to us-east-1 and us-east-1a.
-Without --apply this only checks access and prints the deployment plan.
 The script deploys cloudlink-network, then cloudlink-web, then cloudlink-probes.
 It uses the current CloudShell identity, not API keys stored in this repository.
 The demo dashboard is public unauthenticated HTTP. Do not store sensitive data.
@@ -40,7 +35,7 @@ HELP
 
 while (($#)); do
   case $1 in
-    --management-cidr|--repository-url|--repository-ref|--key-name|--confirm-account)
+    --management-cidr|--repository-url|--repository-ref|--key-name)
       option=$1
       if (($# < 2)); then
         printf 'Missing value for %s\n' "$option" >&2
@@ -51,16 +46,11 @@ while (($#)); do
         --repository-url) repository_url=$2 ;;
         --repository-ref) repository_ref=$2 ;;
         --key-name) ssh_key_name=$2 ;;
-        --confirm-account) confirm_account=$2 ;;
       esac
       shift 2
       ;;
     --enable-peer-ssh)
       enable_peer_ssh=true
-      shift
-      ;;
-    --apply)
-      apply=true
       shift
       ;;
     --help)
@@ -109,55 +99,23 @@ except ValueError as error:
 PY
 
 aws_args=(--region "$region" --no-cli-pager)
-account=$(python3 "$script_dir/cloudlink_stacks.py" account)
+account=$(aws sts get-caller-identity "${aws_args[@]}" --query Account --output text)
 if [[ -n $ssh_key_name ]]; then
   aws ec2 describe-key-pairs "${aws_args[@]}" --key-names "$ssh_key_name" >/dev/null
 fi
-for instance_type in t3.micro; do
-  offered=$(aws ec2 describe-instance-type-offerings "${aws_args[@]}" \
-    --location-type availability-zone \
-    --filters "Name=instance-type,Values=$instance_type" "Name=location,Values=$availability_zone" \
-    --query 'length(InstanceTypeOfferings)' --output text)
-  if [[ $offered != 1 ]]; then
-    printf '%s is not offered in %s. No stacks deployed.\n' "$instance_type" "$availability_zone" >&2
-    exit 1
-  fi
-done
-for template in network.yaml web.yaml probes.yaml; do
-  aws cloudformation validate-template "${aws_args[@]}" --template-body "file://$repo_dir/infra/$template" >/dev/null
-done
 printf 'Using AWS account %s in %s.\n' "$account" "$region"
 printf 'Using Availability Zone %s for the web and probe subnets.\n' "$availability_zone"
-printf 'Plan: cloudlink-network -> cloudlink-web -> cloudlink-probes.\n'
-printf 'Compute: 3 x t3.micro, Amazon Linux 2023; 8 GiB gp3 each; Standard CPU credits.\n'
 printf 'The dashboard will be public on HTTP port 80; web-instance SSH is limited to %s.\n' "$management_cidr"
-if [[ $apply != true ]]; then
-  printf 'Preview only. Add --apply when you are ready to deploy and incur charges.\n'
-  exit 0
-fi
-if [[ -z $confirm_account ]]; then
-  if [[ ! -t 0 ]]; then
-    printf 'Pass --confirm-account %s or run interactively to confirm deployment.\n' "$account" >&2
-    exit 2
-  fi
-  printf 'Type AWS account %s to deploy these stacks and incur charges: ' "$account"
-  read -r confirm_account
-fi
-if [[ $confirm_account != "$account" ]]; then
-  printf 'Account confirmation did not match. No stacks deployed.\n' >&2
-  exit 2
-fi
-python3 "$script_dir/cloudlink_stacks.py" record --account "$account"
 
 deploy_stack() {
   local name=$1 template=$2
   shift 2
   printf '\nDeploying %s...\n' "$name"
+  aws cloudformation validate-template "${aws_args[@]}" --template-body "file://$repo_dir/infra/$template" >/dev/null
   aws cloudformation deploy "${aws_args[@]}" \
     --stack-name "$name" \
     --template-file "$repo_dir/infra/$template" \
     --no-fail-on-empty-changeset \
-    --tags Project=CloudLink ManagedBy=cloudlink-personal "OwnerAccount=$account" \
     --parameter-overrides "$@"
 }
 
@@ -225,4 +183,4 @@ fi
 printf 'Try A -> B: Ping and custom TCP port 8080. HTTP/HTTPS on 80/443 are intentionally not served by the probe nodes.\n'
 printf 'Probe user-data may still be finishing; if the first test cannot reach the source, retry shortly.\n'
 printf 'On an existing web stack, CloudFormation does not reinstall app code when its template is unchanged.\n'
-printf 'When finished: bash scripts/teardown.sh --apply\n'
+printf 'When finished: bash scripts/teardown.sh\n'

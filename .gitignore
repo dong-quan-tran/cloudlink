@@ -17,4 +17,3 @@ venv/
 node_modules/
 .DS_Store
 data/
-.cloudlink-deployment.json
