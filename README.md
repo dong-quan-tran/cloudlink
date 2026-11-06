@@ -24,4 +24,4 @@ The two private probe instances live in a separate lab VPC, reached through VPC 
 
 The dashboard is a shared class demo without user accounts. Individual probe nodes remain single instances. Route-table, ACL, security-group, and peering configuration analysis, along with additional network scenarios, are planned for phase two. Local development can still use the synchronous API and SQLite history.
 
-CloudFormation and CloudShell scripts set up and tear down this environment in a personal AWS account. See [the deployment guide](infra/README.md).
+CloudFormation and CloudShell scripts set up and tear down this environment in a personal AWS account.
