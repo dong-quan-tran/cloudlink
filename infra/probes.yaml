@@ -9,6 +9,13 @@ Parameters:
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  SshKeyName:
+    Type: String
+    Default: ''
+    Description: Optional existing EC2 key pair; CloudLink installs its own management public key
+
+Conditions:
+  HasSshKey: !Not [!Equals [!Ref SshKeyName, '']]
 
 Resources:
   InstanceA:
@@ -16,7 +23,10 @@ Resources:
     Properties:
       ImageId: !Ref LatestAmiId
       InstanceType: t3.micro
-      KeyName: vockey
+      CreditSpecification:
+        CPUCredits: standard
+      KeyName: !If [HasSshKey, !Ref SshKeyName, !Ref 'AWS::NoValue']
+      PropagateTagsToVolumeOnCreation: true
       SubnetId:
         Fn::ImportValue:
           Fn::Sub: '${NetworkStackName}-SubnetAId'
@@ -28,7 +38,7 @@ Resources:
         - DeviceName: /dev/xvda
           Ebs:
             VolumeSize: 8
-            VolumeType: gp2
+            VolumeType: gp3
             DeleteOnTermination: true
       Tags:
         - Key: Name
@@ -76,7 +86,10 @@ Resources:
     Properties:
       ImageId: !Ref LatestAmiId
       InstanceType: t3.micro
-      KeyName: vockey
+      CreditSpecification:
+        CPUCredits: standard
+      KeyName: !If [HasSshKey, !Ref SshKeyName, !Ref 'AWS::NoValue']
+      PropagateTagsToVolumeOnCreation: true
       SubnetId:
         Fn::ImportValue:
           Fn::Sub: '${NetworkStackName}-SubnetBId'
@@ -88,7 +101,7 @@ Resources:
         - DeviceName: /dev/xvda
           Ebs:
             VolumeSize: 8
-            VolumeType: gp2
+            VolumeType: gp3
             DeleteOnTermination: true
       Tags:
         - Key: Name

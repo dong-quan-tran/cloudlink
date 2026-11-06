@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the disposable CloudLink lab from an AWS Academy CloudShell session.
+# Deploy the existing lab from your personal AWS account's CloudShell session.
 set -Eeuo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -8,34 +8,39 @@ region=us-east-1
 availability_zone=us-east-1a
 management_cidr=
 repository_url=https://github.com/dong-quan-tran/cloudlink.git
-repository_ref=main
+repository_ref=personal-account-deploy
 enable_peer_ssh=false
+ssh_key_name=
+apply=false
+confirm_account=
 
 usage() {
   cat <<'HELP'
-Usage: bash scripts/deploy-sandbox.sh [options]
+Usage: bash scripts/deploy.sh [options]
 
 Options:
   --management-cidr IP/32  Public IP of YOUR computer allowed to SSH to the web instance.
                            If omitted, the script asks for it. Do not use CloudShell's IP.
-  --region REGION          AWS region (default: us-east-1).
-  --availability-zone AZ   Zone supporting t3.micro (default: us-east-1a).
-                           Choose a zone in --region; changing it requires a fresh network.
+  --apply                  Deploy after confirming the displayed AWS account.
+  --confirm-account ID     Explicit account confirmation for non-interactive deployment.
+  --key-name NAME          Optional existing administrator EC2 key pair; no key pair is required.
   --repository-url URL     Public GitHub repository cloned by the web instance.
-  --repository-ref REF     Branch or tag installed on a new web instance (default: main).
+  --repository-ref REF     Branch or tag installed on a new instance (default: personal-account-deploy).
   --enable-peer-ssh        Allow SSH banner checks between nodes A and B. By default
                            this port stays blocked as a troubleshooting example.
   --help                   Show this help.
 
+Region and Availability Zone are fixed to us-east-1 and us-east-1a.
+Without --apply this only checks access and prints the deployment plan.
 The script deploys cloudlink-network, then cloudlink-web, then cloudlink-probes.
-It updates existing stacks without deleting them. The public demo dashboard uses
-unauthenticated HTTP on port 80; do not store sensitive information in this lab.
+It uses the current CloudShell identity, not API keys stored in this repository.
+The demo dashboard is public unauthenticated HTTP. Do not store sensitive data.
 HELP
 }
 
 while (($#)); do
   case $1 in
-    --management-cidr|--region|--availability-zone|--repository-url|--repository-ref)
+    --management-cidr|--repository-url|--repository-ref|--key-name|--confirm-account)
       option=$1
       if (($# < 2)); then
         printf 'Missing value for %s\n' "$option" >&2
@@ -43,15 +48,19 @@ while (($#)); do
       fi
       case $option in
         --management-cidr) management_cidr=$2 ;;
-        --region) region=$2 ;;
-        --availability-zone) availability_zone=$2 ;;
         --repository-url) repository_url=$2 ;;
         --repository-ref) repository_ref=$2 ;;
+        --key-name) ssh_key_name=$2 ;;
+        --confirm-account) confirm_account=$2 ;;
       esac
       shift 2
       ;;
     --enable-peer-ssh)
       enable_peer_ssh=true
+      shift
+      ;;
+    --apply)
+      apply=true
       shift
       ;;
     --help)
@@ -65,11 +74,6 @@ while (($#)); do
       ;;
   esac
 done
-
-if [[ $availability_zone != "$region"[a-z] ]]; then
-  printf 'Availability Zone %s must belong to region %s. Pass --availability-zone, for example %sa.\n' "$availability_zone" "$region" "$region" >&2
-  exit 2
-fi
 
 for program in aws curl python3; do
   if ! command -v "$program" >/dev/null 2>&1; then
@@ -105,22 +109,55 @@ except ValueError as error:
 PY
 
 aws_args=(--region "$region" --no-cli-pager)
-printf 'Checking AWS Academy access in %s...\n' "$region"
-account=$(aws sts get-caller-identity "${aws_args[@]}" --query Account --output text)
-aws ec2 describe-key-pairs "${aws_args[@]}" --key-names vockey --query 'KeyPairs[0].KeyName' --output text >/dev/null
-printf 'Using AWS account %s and the lab key pair vockey.\n' "$account"
+account=$(python3 "$script_dir/cloudlink_stacks.py" account)
+if [[ -n $ssh_key_name ]]; then
+  aws ec2 describe-key-pairs "${aws_args[@]}" --key-names "$ssh_key_name" >/dev/null
+fi
+for instance_type in t3.micro; do
+  offered=$(aws ec2 describe-instance-type-offerings "${aws_args[@]}" \
+    --location-type availability-zone \
+    --filters "Name=instance-type,Values=$instance_type" "Name=location,Values=$availability_zone" \
+    --query 'length(InstanceTypeOfferings)' --output text)
+  if [[ $offered != 1 ]]; then
+    printf '%s is not offered in %s. No stacks deployed.\n' "$instance_type" "$availability_zone" >&2
+    exit 1
+  fi
+done
+for template in network.yaml web.yaml probes.yaml; do
+  aws cloudformation validate-template "${aws_args[@]}" --template-body "file://$repo_dir/infra/$template" >/dev/null
+done
+printf 'Using AWS account %s in %s.\n' "$account" "$region"
 printf 'Using Availability Zone %s for the web and probe subnets.\n' "$availability_zone"
+printf 'Plan: cloudlink-network -> cloudlink-web -> cloudlink-probes.\n'
+printf 'Compute: 3 x t3.micro, Amazon Linux 2023; 8 GiB gp3 each; Standard CPU credits.\n'
 printf 'The dashboard will be public on HTTP port 80; web-instance SSH is limited to %s.\n' "$management_cidr"
+if [[ $apply != true ]]; then
+  printf 'Preview only. Add --apply when you are ready to deploy and incur charges.\n'
+  exit 0
+fi
+if [[ -z $confirm_account ]]; then
+  if [[ ! -t 0 ]]; then
+    printf 'Pass --confirm-account %s or run interactively to confirm deployment.\n' "$account" >&2
+    exit 2
+  fi
+  printf 'Type AWS account %s to deploy these stacks and incur charges: ' "$account"
+  read -r confirm_account
+fi
+if [[ $confirm_account != "$account" ]]; then
+  printf 'Account confirmation did not match. No stacks deployed.\n' >&2
+  exit 2
+fi
+python3 "$script_dir/cloudlink_stacks.py" record --account "$account"
 
 deploy_stack() {
   local name=$1 template=$2
   shift 2
   printf '\nDeploying %s...\n' "$name"
-  aws cloudformation validate-template "${aws_args[@]}" --template-body "file://$repo_dir/infra/$template" >/dev/null
   aws cloudformation deploy "${aws_args[@]}" \
     --stack-name "$name" \
     --template-file "$repo_dir/infra/$template" \
     --no-fail-on-empty-changeset \
+    --tags Project=CloudLink ManagedBy=cloudlink-personal "OwnerAccount=$account" \
     --parameter-overrides "$@"
 }
 
@@ -140,7 +177,8 @@ deploy_stack cloudlink-network network.yaml \
 deploy_stack cloudlink-web web.yaml \
   NetworkStackName=cloudlink-network \
   "RepositoryUrl=$repository_url" \
-  "RepositoryRef=$repository_ref"
+  "RepositoryRef=$repository_ref" \
+  "SshKeyName=$ssh_key_name"
 
 web_url=$(stack_output cloudlink-web WebUrl)
 if [[ -z $web_url || $web_url == None ]]; then
@@ -152,7 +190,7 @@ fi
 # instances must not start until the web server is serving their SSH public key.
 printf 'Waiting for the web instance to finish installing...\n'
 web_ready=false
-for ((attempt = 1; attempt <= 60; attempt++)); do
+for ((attempt = 1; attempt <= 120; attempt++)); do
   if curl --silent --show-error --fail --connect-timeout 3 --max-time 5 \
       --output /dev/null "$web_url" 2>/dev/null; then
     web_ready=true
@@ -166,7 +204,7 @@ if [[ $web_ready != true ]]; then
   exit 1
 fi
 
-deploy_stack cloudlink-probes probes.yaml NetworkStackName=cloudlink-network
+deploy_stack cloudlink-probes probes.yaml NetworkStackName=cloudlink-network "SshKeyName=$ssh_key_name"
 
 node_a=$(stack_output cloudlink-probes NodeAInstanceId)
 node_b=$(stack_output cloudlink-probes NodeBInstanceId)
@@ -176,7 +214,7 @@ probe_public_ips=$(aws ec2 describe-instances "${aws_args[@]}" \
   --instance-ids "$node_a" "$node_b" \
   --query 'Reservations[].Instances[].PublicIpAddress' --output text)
 
-printf '\nCloudLink stacks deployed. Open: %s\n' "$web_url"
+printf '\nCloudLink stacks deployed in account %s. Open: %s\n' "$account" "$web_url"
 printf 'Node A: %s\n' "$node_a"
 printf 'Node B: %s\n' "$node_b"
 printf 'Peer-to-peer SSH banner tests enabled: %s\n' "$enable_peer_ssh"
@@ -187,3 +225,4 @@ fi
 printf 'Try A -> B: Ping and custom TCP port 8080. HTTP/HTTPS on 80/443 are intentionally not served by the probe nodes.\n'
 printf 'Probe user-data may still be finishing; if the first test cannot reach the source, retry shortly.\n'
 printf 'On an existing web stack, CloudFormation does not reinstall app code when its template is unchanged.\n'
+printf 'When finished: bash scripts/teardown.sh --apply\n'

@@ -13,12 +13,19 @@ Parameters:
     Description: Public CloudLink repository cloned by the web instance at first boot
   RepositoryRef:
     Type: String
-    Default: main
+    Default: personal-account-deploy
     AllowedPattern: '^[A-Za-z0-9._/-]+$'
     Description: Public repository branch or tag to install
+  SshKeyName:
+    Type: String
+    Default: ''
+    Description: Optional existing EC2 key pair for administrator SSH; not needed for probe execution
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Conditions:
+  HasSshKey: !Not [!Equals [!Ref SshKeyName, '']]
 
 Resources:
   WebInstance:
@@ -26,7 +33,10 @@ Resources:
     Properties:
       ImageId: !Ref LatestAmiId
       InstanceType: t3.micro
-      KeyName: vockey
+      CreditSpecification:
+        CPUCredits: standard
+      KeyName: !If [HasSshKey, !Ref SshKeyName, !Ref 'AWS::NoValue']
+      PropagateTagsToVolumeOnCreation: true
       SubnetId:
         Fn::ImportValue:
           Fn::Sub: '${NetworkStackName}-WebSubnetId'
@@ -38,7 +48,7 @@ Resources:
         - DeviceName: /dev/xvda
           Ebs:
             VolumeSize: 8
-            VolumeType: gp2
+            VolumeType: gp3
             DeleteOnTermination: true
       Tags:
         - Key: Name
