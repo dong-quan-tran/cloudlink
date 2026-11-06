@@ -192,6 +192,7 @@ Resources:
       SourceSecurityGroupId: !Ref SecurityGroupB
   ProbeATcp8080:
     Type: AWS::EC2::SecurityGroupIngress
+    Condition: PeerSshEnabled
     Properties:
       GroupId: !Ref SecurityGroupA
       IpProtocol: tcp
