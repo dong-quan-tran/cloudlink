@@ -93,7 +93,7 @@ Resources:
                 install -d -m 0755 /etc/cloudlink /opt/cloudlink
                 install -m 0600 -o cloudlink -g cloudlink /dev/null /var/lib/cloudlink/.ssh/id_ed25519
                 aws ssm get-parameter --region '${AWS::Region}' --name '${KeyParameter}' --with-decryption --query Parameter.Value --output text > /var/lib/cloudlink/.ssh/id_ed25519
-                git clone --single-branch --branch main https://github.com/dong-quan-tran/cloudlink.git /opt/cloudlink/app
+                git clone https://github.com/dong-quan-tran/cloudlink.git /opt/cloudlink/app
                 git -C /opt/cloudlink/app checkout --detach '${RepositoryCommit}'
                 python3.11 -m venv /opt/cloudlink/venv
                 /opt/cloudlink/venv/bin/pip install -r /opt/cloudlink/app/requirements.txt
