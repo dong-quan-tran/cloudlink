@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const token = document.querySelector('meta[name="cloudlink-token"]').content;
 let nodes = [];
+let busy = false;
 const testLabels = {ping: 'PING', http: 'HTTP', https: 'HTTPS', ssh: 'SSH', tcp: 'CUSTOM TCP'};
 const testDescriptions = {
   ping: 'Sends two ICMP echo requests from the source. A failed ping does not prove that other traffic is blocked.',
@@ -32,7 +33,7 @@ function updateButton() {
   const testType = $('test-type').value;
   const port = Number($('tcp-port').value);
   const portValid = testType !== 'tcp' || ($('tcp-port').value !== '' && Number.isInteger(port) && port >= 1 && port <= 65535);
-  $('run-test').disabled = !($('source').value && $('destination').value && $('source').value !== $('destination').value && portValid);
+  $('run-test').disabled = busy || !($('source').value && $('destination').value && $('source').value !== $('destination').value && portValid);
 }
 
 function updateTestType() {
@@ -110,7 +111,12 @@ async function loadHistory() {
 }
 
 async function runTest() {
+  if (sessionStorage.getItem('cloudlink.pendingJob')) {
+    await resumeJob();
+    return;
+  }
   const button = $('run-test');
+  busy = true;
   button.disabled = true;
   button.textContent = 'Running test…';
   showNotice('');
@@ -122,10 +128,57 @@ async function runTest() {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Test failed.');
-    showResult(data);
+    if (response.status === 202) {
+      sessionStorage.setItem('cloudlink.pendingJob', data.id);
+      await loadHistory();
+      await followJob(data.id);
+    } else {
+      showResult(data);
+    }
     await loadHistory();
   } catch (error) { showNotice(error.message); }
-  finally { button.innerHTML = 'Run connection test <span>→</span>'; updateButton(); }
+  finally { busy = false; button.innerHTML = 'Run connection test <span>→</span>'; updateButton(); }
+}
+
+async function followJob(id) {
+  // The same status URL works through either app server. Preserve it on refresh.
+  for (;;) {
+    const response = await fetch(`/api/tests/${encodeURIComponent(id)}`);
+    const job = await response.json();
+    if (!response.ok) {
+      if (response.status === 404) sessionStorage.removeItem('cloudlink.pendingJob');
+      throw new Error(job.error || 'Could not retrieve the test. Refresh to reconnect.');
+    }
+    if (job.status === 'completed') {
+      sessionStorage.removeItem('cloudlink.pendingJob');
+      showNotice('');
+      showResult(job);
+      return;
+    }
+    if (job.status === 'failed') {
+      sessionStorage.removeItem('cloudlink.pendingJob');
+      throw new Error(job.error || 'This request could not complete. Please retry.');
+    }
+    const state = job.status === 'running' ? 'Running' : 'Queued';
+    $('run-test').textContent = `${state}…`;
+    showNotice(`${state}: ${job.source_name} → ${job.destination_name}. You can refresh this page without losing the request.`);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
+
+async function resumeJob() {
+  const id = sessionStorage.getItem('cloudlink.pendingJob');
+  if (!id) return;
+  busy = true;
+  updateButton();
+  try { await followJob(id); }
+  catch (error) { showNotice(error.message); }
+  finally {
+    busy = false;
+    $('run-test').innerHTML = 'Run connection test <span>→</span>';
+    updateButton();
+    await loadHistory();
+  }
 }
 
 $('source').addEventListener('change', updateButton);
@@ -137,3 +190,4 @@ $('run-test').addEventListener('click', runTest);
 updateTestType();
 loadNodes();
 loadHistory();
+resumeJob();
