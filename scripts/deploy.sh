@@ -1,108 +1,30 @@
 #!/usr/bin/env bash
-# Deploy the existing lab from your personal AWS account's CloudShell session.
+# Run from your personal AWS account's CloudShell.
 set -Eeuo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd -- "$script_dir/.." && pwd)
 region=us-east-1
 availability_zone=us-east-1a
-management_cidr=
 repository_url=https://github.com/dong-quan-tran/cloudlink.git
 repository_ref=personal-account-deploy
 enable_peer_ssh=false
-ssh_key_name=
 
-usage() {
-  cat <<'HELP'
-Usage: bash scripts/deploy.sh [options]
-
-Options:
-  --management-cidr IP/32  Public IP of YOUR computer allowed to SSH to the web instance.
-                           If omitted, the script asks for it. Do not use CloudShell's IP.
-  --key-name NAME          Optional existing administrator EC2 key pair; no key pair is required.
-  --repository-url URL     Public GitHub repository cloned by the web instance.
-  --repository-ref REF     Branch or tag installed on a new instance (default: personal-account-deploy).
-  --enable-peer-ssh        Allow SSH banner checks between nodes A and B. By default
-                           this port stays blocked as a troubleshooting example.
-  --help                   Show this help.
-
-Region and Availability Zone are fixed to us-east-1 and us-east-1a.
-The script deploys cloudlink-network, then cloudlink-web, then cloudlink-probes.
-It uses the current CloudShell identity, not API keys stored in this repository.
-The demo dashboard is public unauthenticated HTTP. Do not store sensitive data.
-HELP
-}
-
-while (($#)); do
-  case $1 in
-    --management-cidr|--repository-url|--repository-ref|--key-name)
-      option=$1
-      if (($# < 2)); then
-        printf 'Missing value for %s\n' "$option" >&2
-        exit 2
-      fi
-      case $option in
-        --management-cidr) management_cidr=$2 ;;
-        --repository-url) repository_url=$2 ;;
-        --repository-ref) repository_ref=$2 ;;
-        --key-name) ssh_key_name=$2 ;;
-      esac
-      shift 2
-      ;;
-    --enable-peer-ssh)
-      enable_peer_ssh=true
-      shift
-      ;;
-    --help)
-      usage
-      exit 0
-      ;;
-    *)
-      printf 'Unknown option: %s\n' "$1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
-
-for program in aws curl python3; do
-  if ! command -v "$program" >/dev/null 2>&1; then
-    printf 'Required program not found: %s\n' "$program" >&2
+read -r -p "Enter your computer's public IPv4 address with /32 (not CloudShell's IP): " management_cidr
+if [[ ! $management_cidr =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/32$ ]]; then
+  printf 'Enter one IPv4 address followed by /32.\n' >&2
+  exit 1
+fi
+IFS=. read -r a b c d <<< "${management_cidr%/32}"
+for octet in "$a" "$b" "$c" "$d"; do
+  if ((10#$octet > 255)); then
+    printf 'Invalid IPv4 address.\n' >&2
     exit 1
   fi
 done
 
-if [[ -z $management_cidr ]]; then
-  if [[ ! -t 0 ]]; then
-    printf 'Pass --management-cidr YOUR_COMPUTER_PUBLIC_IP/32 (not CloudShell IP).\n' >&2
-    exit 2
-  fi
-  printf 'Enter your computer\047s public IPv4 address with /32 (not CloudShell\047s IP): '
-  read -r management_cidr
-fi
-
-python3 - "$management_cidr" "$repository_url" "$repository_ref" <<'PY'
-import ipaddress
-import re
-import sys
-
-try:
-    network = ipaddress.ip_network(sys.argv[1], strict=True)
-    if network.version != 4 or network.prefixlen != 32:
-        raise ValueError("the management address must be one IPv4 address with /32")
-    if not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", sys.argv[2]):
-        raise ValueError("the repository URL must be a public GitHub HTTPS URL")
-    if not re.fullmatch(r"[A-Za-z0-9._/-]+", sys.argv[3]):
-        raise ValueError("the repository ref contains invalid characters")
-except ValueError as error:
-    sys.exit(f"Invalid input: {error}")
-PY
-
 aws_args=(--region "$region" --no-cli-pager)
 account=$(aws sts get-caller-identity "${aws_args[@]}" --query Account --output text)
-if [[ -n $ssh_key_name ]]; then
-  aws ec2 describe-key-pairs "${aws_args[@]}" --key-names "$ssh_key_name" >/dev/null
-fi
 printf 'Using AWS account %s in %s.\n' "$account" "$region"
 printf 'Using Availability Zone %s for the web and probe subnets.\n' "$availability_zone"
 printf 'The dashboard will be public on HTTP port 80; web-instance SSH is limited to %s.\n' "$management_cidr"
@@ -136,7 +58,7 @@ deploy_stack cloudlink-web web.yaml \
   NetworkStackName=cloudlink-network \
   "RepositoryUrl=$repository_url" \
   "RepositoryRef=$repository_ref" \
-  "SshKeyName=$ssh_key_name"
+  'SshKeyName='
 
 web_url=$(stack_output cloudlink-web WebUrl)
 if [[ -z $web_url || $web_url == None ]]; then
@@ -162,7 +84,7 @@ if [[ $web_ready != true ]]; then
   exit 1
 fi
 
-deploy_stack cloudlink-probes probes.yaml NetworkStackName=cloudlink-network "SshKeyName=$ssh_key_name"
+deploy_stack cloudlink-probes probes.yaml NetworkStackName=cloudlink-network 'SshKeyName='
 
 node_a=$(stack_output cloudlink-probes NodeAInstanceId)
 node_b=$(stack_output cloudlink-probes NodeBInstanceId)
