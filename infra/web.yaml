@@ -1,147 +1,287 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudLink public web instance, installed from a public Git repository
-
+Description: CloudLink HTTPS entry point and two-AZ application Auto Scaling Group
 Parameters:
   NetworkStackName:
     Type: String
     Default: cloudlink-network
-    Description: Name of the deployed CloudLink network stack
-  RepositoryUrl:
+  ServicesStackName:
     Type: String
-    AllowedPattern: '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$'
-    ConstraintDescription: Supply a public GitHub repository HTTPS URL
-    Description: Public CloudLink repository cloned by the web instance at first boot
+    Default: cloudlink-services
   RepositoryRef:
     Type: String
-    Default: main
+    Default: personal-account-deploy
     AllowedPattern: '^[A-Za-z0-9._/-]+$'
-    Description: Public repository branch or tag to install
+  RepositoryCommit:
+    Type: String
+    AllowedPattern: '^[a-f0-9]{40}$'
+    Description: Commit installed on every app instance; supplied by deploy.sh
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
 
 Resources:
-  WebInstance:
-    Type: AWS::EC2::Instance
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      ImageId: !Ref LatestAmiId
-      InstanceType: t3.micro
-      KeyName: vockey
-      SubnetId:
-        Fn::ImportValue:
-          Fn::Sub: '${NetworkStackName}-WebSubnetId'
-      PrivateIpAddress: 10.10.3.10
-      SecurityGroupIds:
-        - Fn::ImportValue:
-            Fn::Sub: '${NetworkStackName}-WebSecurityGroupId'
-      BlockDeviceMappings:
-        - DeviceName: /dev/xvda
-          Ebs:
-            VolumeSize: 8
-            VolumeType: gp2
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      Subnets:
+        - Fn::ImportValue: !Sub '${NetworkStackName}-AppSubnetAId'
+        - Fn::ImportValue: !Sub '${NetworkStackName}-AppSubnetBId'
+      SecurityGroups:
+        - Fn::ImportValue: !Sub '${NetworkStackName}-LoadBalancerSecurityGroupId'
+      Tags: [{Key: Project, Value: CloudLink}]
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      VpcId:
+        Fn::ImportValue: !Sub '${NetworkStackName}-AppVpcId'
+      HealthCheckPath: /healthz
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - {Key: deregistration_delay.timeout_seconds, Value: '30'}
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: t3.micro
+        CreditSpecification: {CpuCredits: standard}
+        IamInstanceProfile:
+          Name:
+            Fn::ImportValue: !Sub '${ServicesStackName}-AppProfileName'
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
             DeleteOnTermination: true
-      Tags:
-        - Key: Name
-          Value: CloudLink-Web
-        - Key: Project
-          Value: CloudLink
-        - Key: CloudLinkRole
-          Value: Web
-      UserData:
-        Fn::Base64:
-          Fn::Sub:
-            - |
-              #!/bin/bash
-              set -euxo pipefail
-              dnf install -y git nginx python3.11 python3.11-pip
-              useradd --system --create-home --home-dir /var/lib/cloudlink --shell /sbin/nologin cloudlink
-              install -d -m 0700 -o cloudlink -g cloudlink /var/lib/cloudlink/.ssh
-              runuser -u cloudlink -- ssh-keygen -q -t ed25519 -N '' -f /var/lib/cloudlink/.ssh/id_ed25519
-              install -m 0644 /var/lib/cloudlink/.ssh/id_ed25519.pub /usr/share/nginx/html/probe-key
-              install -d -m 0755 /etc/cloudlink /opt/cloudlink
-              cat > /etc/cloudlink/nodes.json <<'JSON'
-              [
-                {"instance_id":"node-a","name":"CloudLink-Node-A","private_ip":"10.10.1.10","public_ip":null,"vpc_id":"${VpcId}","subnet_id":"${SubnetAId}","security_group_ids":["${SecurityGroupAId}"]},
-                {"instance_id":"node-b","name":"CloudLink-Node-B","private_ip":"10.10.2.10","public_ip":null,"vpc_id":"${VpcId}","subnet_id":"${SubnetBId}","security_group_ids":["${SecurityGroupBId}"]}
-              ]
-              JSON
-              cat > /etc/nginx/nginx.conf <<'NGINX'
-              user nginx;
-              worker_processes auto;
-              error_log /var/log/nginx/error.log;
-              pid /run/nginx.pid;
-              events { worker_connections 1024; }
-              http {
-                include /etc/nginx/mime.types;
-                default_type application/octet-stream;
-                upstream cloudlink_app { server unix:/run/cloudlink/cloudlink.sock; }
-                server {
-                  listen 80 default_server;
-                  server_name _;
-                  location = /probe-key {
-                    allow 10.10.0.0/16;
-                    deny all;
-                    alias /usr/share/nginx/html/probe-key;
-                  }
-                  location / {
-                    proxy_pass http://cloudlink_app;
-                    proxy_set_header Host $host;
-                    proxy_set_header X-Real-IP $remote_addr;
-                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                    proxy_set_header X-Forwarded-Proto $scheme;
+            Groups:
+              - Fn::ImportValue: !Sub '${NetworkStackName}-AppSecurityGroupId'
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 8
+              VolumeType: gp3
+              DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: volume
+            Tags: [{Key: Project, Value: CloudLink}]
+        UserData:
+          Fn::Base64:
+            Fn::Sub:
+              - |
+                #!/bin/bash
+                set -euo pipefail
+                dnf install -y git nginx python3.11 python3.11-pip aws-cfn-bootstrap awscli-2 openssh-clients
+                trap '/opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AppAutoScalingGroup --region ${AWS::Region}' EXIT
+                useradd --system --create-home --home-dir /var/lib/cloudlink --shell /sbin/nologin cloudlink
+                install -d -m 0700 -o cloudlink -g cloudlink /var/lib/cloudlink/.ssh
+                install -d -m 0755 /etc/cloudlink /opt/cloudlink
+                install -m 0600 -o cloudlink -g cloudlink /dev/null /var/lib/cloudlink/.ssh/id_ed25519
+                aws ssm get-parameter --region '${AWS::Region}' --name '${KeyParameter}' --with-decryption --query Parameter.Value --output text > /var/lib/cloudlink/.ssh/id_ed25519
+                git clone --single-branch --branch '${RepositoryRef}' https://github.com/dong-quan-tran/cloudlink.git /opt/cloudlink/app
+                git -C /opt/cloudlink/app checkout --detach '${RepositoryCommit}'
+                python3.11 -m venv /opt/cloudlink/venv
+                /opt/cloudlink/venv/bin/pip install -r /opt/cloudlink/app/requirements.txt
+                cat > /etc/cloudlink/runtime.env <<'ENV'
+                AWS_REGION=${AWS::Region}
+                CLOUDLINK_TABLE_NAME=${TableName}
+                CLOUDLINK_QUEUE_URL=${QueueUrl}
+                CLOUDLINK_KEY_PATH=/var/lib/cloudlink/.ssh/id_ed25519
+                CLOUDLINK_SOURCE_ADDRESS=private
+                CLOUDLINK_SECURE_COOKIE=true
+                ENV
+                cat > /etc/nginx/nginx.conf <<'NGINX'
+                user nginx;
+                worker_processes auto;
+                error_log /var/log/nginx/error.log;
+                pid /run/nginx.pid;
+                events { worker_connections 1024; }
+                http {
+                  include /etc/nginx/mime.types;
+                  upstream cloudlink_app { server unix:/run/cloudlink/cloudlink.sock; }
+                  server {
+                    listen 80 default_server;
+                    server_name _;
+                    client_max_body_size 16k;
+                    location / {
+                      proxy_pass http://cloudlink_app;
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    }
                   }
                 }
-              }
-              NGINX
-              nginx -t
-              systemctl enable --now nginx
-              git clone --depth 1 --branch '${RepositoryRef}' '${RepositoryUrl}' /opt/cloudlink/app
-              python3.11 -m venv /opt/cloudlink/venv
-              /opt/cloudlink/venv/bin/pip install -r /opt/cloudlink/app/requirements.txt
-              cat > /etc/systemd/system/cloudlink.service <<'UNIT'
-              [Unit]
-              Description=CloudLink web application
-              After=network-online.target
-              Wants=network-online.target
-              [Service]
-              Type=simple
-              User=cloudlink
-              Group=nginx
-              WorkingDirectory=/opt/cloudlink/app
-              Environment=CLOUDLINK_INVENTORY_PATH=/etc/cloudlink/nodes.json
-              Environment=CLOUDLINK_KEY_PATH=/var/lib/cloudlink/.ssh/id_ed25519
-              Environment=CLOUDLINK_SOURCE_ADDRESS=private
-              Environment=CLOUDLINK_DATA_PATH=/var/lib/cloudlink/history.sqlite3
-              RuntimeDirectory=cloudlink
-              RuntimeDirectoryMode=0750
-              ExecStart=/opt/cloudlink/venv/bin/gunicorn --workers 1 --bind unix:/run/cloudlink/cloudlink.sock --umask 007 cloudlink.web:create_app()
-              Restart=always
-              RestartSec=2
-              [Install]
-              WantedBy=multi-user.target
-              UNIT
-              systemctl daemon-reload
-              systemctl enable --now cloudlink
-            - VpcId:
-                Fn::ImportValue:
-                  Fn::Sub: '${NetworkStackName}-VpcId'
-              SubnetAId:
-                Fn::ImportValue:
-                  Fn::Sub: '${NetworkStackName}-SubnetAId'
-              SubnetBId:
-                Fn::ImportValue:
-                  Fn::Sub: '${NetworkStackName}-SubnetBId'
-              SecurityGroupAId:
-                Fn::ImportValue:
-                  Fn::Sub: '${NetworkStackName}-SecurityGroupAId'
-              SecurityGroupBId:
-                Fn::ImportValue:
-                  Fn::Sub: '${NetworkStackName}-SecurityGroupBId'
+                NGINX
+                cat > /etc/systemd/system/cloudlink.service <<'UNIT'
+                [Unit]
+                Description=CloudLink web application
+                After=network-online.target
+                Wants=network-online.target
+                [Service]
+                User=cloudlink
+                Group=nginx
+                WorkingDirectory=/opt/cloudlink/app
+                EnvironmentFile=/etc/cloudlink/runtime.env
+                RuntimeDirectory=cloudlink
+                RuntimeDirectoryMode=0750
+                ExecStart=/opt/cloudlink/venv/bin/gunicorn --workers 2 --bind unix:/run/cloudlink/cloudlink.sock --umask 007 cloudlink.web:create_app()
+                Restart=always
+                RestartSec=3
+                [Install]
+                WantedBy=multi-user.target
+                UNIT
+                cat > /etc/systemd/system/cloudlink-worker.service <<'UNIT'
+                [Unit]
+                Description=CloudLink queued connectivity worker
+                After=network-online.target
+                Wants=network-online.target
+                [Service]
+                User=cloudlink
+                Group=nginx
+                WorkingDirectory=/opt/cloudlink/app
+                EnvironmentFile=/etc/cloudlink/runtime.env
+                ExecStart=/opt/cloudlink/venv/bin/python -m cloudlink.worker
+                Restart=always
+                RestartSec=3
+                TimeoutStopSec=30
+                [Install]
+                WantedBy=multi-user.target
+                UNIT
+                nginx -t
+                systemctl daemon-reload
+                systemctl enable --now cloudlink cloudlink-worker nginx
+                for attempt in $(seq 1 30); do
+                  if curl -fsS http://127.0.0.1/healthz && curl -fsS http://127.0.0.1/api/history; then
+                    systemctl is-active --quiet cloudlink-worker
+                    exit 0
+                  fi
+                  sleep 2
+                done
+                exit 1
+              - KeyParameter:
+                  Fn::ImportValue: !Sub '${ServicesStackName}-KeyParameterName'
+                TableName:
+                  Fn::ImportValue: !Sub '${ServicesStackName}-TableName'
+                QueueUrl:
+                  Fn::ImportValue: !Sub '${ServicesStackName}-QueueUrl'
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: Listener
+    CreationPolicy:
+      ResourceSignal: {Count: 2, Timeout: PT20M}
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT20M
+        WaitOnResourceSignals: true
+    Properties:
+      MinSize: '2'
+      MaxSize: '3'
+      DesiredCapacity: '2'
+      DefaultInstanceWarmup: 180
+      MetricsCollection:
+        - Granularity: 1Minute
+          Metrics: [GroupInServiceInstances]
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 900
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub '${NetworkStackName}-AppSubnetAId'
+        - Fn::ImportValue: !Sub '${NetworkStackName}-AppSubnetBId'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      TargetGroupARNs: [!Ref TargetGroup]
+      Tags:
+        - {Key: Name, Value: CloudLink-App, PropagateAtLaunch: true}
+        - {Key: Project, Value: CloudLink, PropagateAtLaunch: true}
+        - {Key: CloudLinkRole, Value: Web, PropagateAtLaunch: true}
+  QueueScaling:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        TargetValue: 2
+        CustomizedMetricSpecification:
+          Metrics:
+            - Id: backlog
+              ReturnData: false
+              MetricStat:
+                Metric:
+                  Namespace: AWS/SQS
+                  MetricName: ApproximateNumberOfMessagesVisible
+                  Dimensions:
+                    - Name: QueueName
+                      Value:
+                        Fn::ImportValue: !Sub '${ServicesStackName}-QueueName'
+                Stat: Average
+            - Id: workers
+              ReturnData: false
+              MetricStat:
+                Metric:
+                  Namespace: AWS/AutoScaling
+                  MetricName: GroupInServiceInstances
+                  Dimensions:
+                    - Name: AutoScalingGroupName
+                      Value: !Ref AppAutoScalingGroup
+                Stat: Average
+            - Id: jobs_per_worker
+              ReturnData: true
+              Expression: 'IF(workers > 0, backlog / workers, backlog)'
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: CloudLink class dashboard
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        IPV6Enabled: true
+        Origins:
+          - Id: cloudlink-alb
+            DomainName: !GetAtt LoadBalancer.DNSName
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+              HTTPPort: 80
+        DefaultCacheBehavior:
+          TargetOriginId: cloudlink-alb
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+        ViewerCertificate: {CloudFrontDefaultCertificate: true}
+        CustomErrorResponses:
+          - {ErrorCode: 500, ErrorCachingMinTTL: 0}
+          - {ErrorCode: 502, ErrorCachingMinTTL: 0}
+          - {ErrorCode: 503, ErrorCachingMinTTL: 0}
+          - {ErrorCode: 504, ErrorCachingMinTTL: 0}
 
 Outputs:
-  WebInstanceId:
-    Value: !Ref WebInstance
-  WebPublicIp:
-    Value: !GetAtt WebInstance.PublicIp
   WebUrl:
-    Value: !Sub 'http://${WebInstance.PublicIp}/'
+    Value: !Sub 'https://${WebDistribution.DomainName}/'
+  AutoScalingGroupName:
+    Value: !Ref AppAutoScalingGroup
+  TargetGroupArn:
+    Value: !Ref TargetGroup

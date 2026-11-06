@@ -8,6 +8,7 @@ CloudLink is a guided network troubleshooting tool for cloud-hosted applications
 - Runs a test from the source using ICMP ping, HTTP, HTTPS, an SSH server-banner check, or a custom TCP port.
 - Shows the result, a likely area to investigate, and a suggested next check.
 - Saves recent results so you can compare before and after a configuration change.
+- Queues hosted requests and shows their progress while background workers run the checks.
 
 CloudLink's tests are read-only. A failed check is specific to the protocol and port selected; it does not, by itself, prove that all traffic between the instances is blocked.
 
@@ -17,8 +18,10 @@ CloudLink is intended for junior cloud administrators, application developers, a
 
 ## Current project scope
 
-The first version is an AWS Academy lab with a public CloudLink web instance and two private test instances in separate subnets of the same VPC. The web instance reaches the selected source over a private management connection; the source runs the chosen test against the destination's private IP. The interface currently lists these two configured lab nodes, not every instance in an AWS account. Testing arbitrary private networks, peered VPCs, and additional instances is future work.
+CloudLink's application runs in its own VPC, with a load balancer and an Auto Scaling Group spanning two Availability Zones. Classmates access the dashboard through a CloudFront HTTPS URL. SQS queues connectivity requests, and DynamoDB shares job progress, results, and history between application servers. Failed app instances can be replaced without losing the shared history.
 
-The earlier all-public lab was deployed and its web dashboard and private-IP ping tests were verified; the private-subnet layout has not yet been deployed end to end. TCP port 8080 is available on each probe node; HTTP and HTTPS on ports 80 and 443 are not. Peer-to-peer SSH is blocked by default so CloudLink can demonstrate a protocol-specific failure even while ping works. The lab is disposable, not production-ready: the dashboard uses unauthenticated HTTP on a web port that is public by default. Administrative SSH to the web instance remains limited to a specified `/32` address.
+The two private probe instances live in a separate lab VPC, reached through VPC peering. CloudLink discovers running instances tagged as its probes and connects to the selected source over private SSH. The source then runs the selected check against the destination. TCP 8080 and ICMP are allowed between the probes; peer-to-peer SSH is blocked to demonstrate a protocol-specific failure. The probes do not serve HTTP/HTTPS on ports 80/443.
 
-For AWS Academy setup, see [the lab deployment guide](infra/README.md).
+The dashboard is a shared class demo without user accounts. Individual probe nodes remain single instances. Route-table, ACL, security-group, and peering configuration analysis, along with additional network scenarios, are planned for phase two. Local development can still use the synchronous API and SQLite history.
+
+CloudFormation and CloudShell scripts set up and tear down this environment in a personal AWS account.

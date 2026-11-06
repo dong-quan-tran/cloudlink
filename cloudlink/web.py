@@ -1,30 +1,42 @@
-"""Local-only CloudLink dashboard and bounded test API."""
+"""CloudLink dashboard, with queued AWS jobs or a local synchronous fallback."""
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, session as browser_session
 
 from .history import HistoryStore
+from .jobs import JobStore
 from .probe import TEST_TYPES, discover_nodes, load_inventory, run_probe
 
 
-def create_app(session: Any | None = None, data_path: Path | None = None) -> Flask:
+def create_app(session: Any | None = None, data_path: Path | None = None, job_store: Any | None = None) -> Flask:
     app = Flask(__name__)
     inventory_path = os.getenv("CLOUDLINK_INVENTORY_PATH")
-    if session is None and not inventory_path:
+    table_name = os.getenv("CLOUDLINK_TABLE_NAME")
+    if session is None and (table_name or not inventory_path):
         import boto3
 
         session = boto3.session.Session(region_name=os.getenv("AWS_REGION", "us-east-1"))
-    store = HistoryStore(
+    if table_name and job_store is None:
+        job_store = JobStore(session, table_name, os.environ["CLOUDLINK_QUEUE_URL"])
+    store = job_store if job_store is not None else HistoryStore(
         data_path
         or Path(os.getenv("CLOUDLINK_DATA_PATH", str(Path(__file__).resolve().parents[1] / "data" / "history.sqlite3")))
     )
-    csrf_token = secrets.token_urlsafe(32)
+    key_path = os.getenv("CLOUDLINK_KEY_PATH")
+    # Every replica derives the same session-signing secret from the private
+    # management credential, with a distinct purpose prefix. No secret is in Git.
+    app.secret_key = (hashlib.sha256(b"CloudLink session signing\0" + Path(key_path).read_bytes()).digest()
+                      if key_path else secrets.token_bytes(32))
+    app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+                      SESSION_COOKIE_SECURE=os.getenv("CLOUDLINK_SECURE_COOKIE") == "true",
+                      MAX_CONTENT_LENGTH=16 * 1024)
 
     def available_nodes() -> list[Any]:
         if inventory_path:
@@ -44,7 +56,13 @@ def create_app(session: Any | None = None, data_path: Path | None = None) -> Fla
 
     @app.get("/")
     def index() -> str:
-        return render_template("index.html", csrf_token=csrf_token)
+        if "csrf_token" not in browser_session:
+            browser_session["csrf_token"] = secrets.token_urlsafe(32)
+        return render_template("index.html", csrf_token=browser_session["csrf_token"])
+
+    @app.get("/healthz")
+    def health() -> Any:
+        return jsonify({"status": "ok"})
 
     @app.get("/api/instances")
     def instances() -> Any:
@@ -57,11 +75,29 @@ def create_app(session: Any | None = None, data_path: Path | None = None) -> Fla
 
     @app.get("/api/history")
     def history() -> Any:
-        return jsonify({"tests": store.recent()})
+        try:
+            return jsonify({"tests": store.recent()})
+        except Exception:
+            app.logger.exception("History unavailable")
+            return jsonify({"error": "History is temporarily unavailable."}), 503
+
+    @app.get("/api/tests/<uuid:job_id>")
+    def job_status(job_id: Any) -> Any:
+        if job_store is None:
+            return jsonify({"error": "Queued jobs are not enabled locally."}), 404
+        try:
+            job = job_store.get(str(job_id))
+            if job is None:
+                return jsonify({"error": "This test was not found or has expired."}), 404
+            return jsonify(job_store.view(job))
+        except Exception:
+            app.logger.exception("Job status unavailable")
+            return jsonify({"error": "Test status is temporarily unavailable."}), 503
 
     @app.post("/api/tests")
     def test_connection() -> Any:
-        if not secrets.compare_digest(request.headers.get("X-CloudLink-Token", ""), csrf_token):
+        csrf_token = browser_session.get("csrf_token")
+        if not csrf_token or not secrets.compare_digest(request.headers.get("X-CloudLink-Token", ""), csrf_token):
             return jsonify({"error": "Invalid page token. Refresh and try again."}), 403
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
@@ -87,6 +123,14 @@ def create_app(session: Any | None = None, data_path: Path | None = None) -> Fla
             destination = nodes.get(destination_id)
             if source is None or destination is None:
                 return jsonify({"error": "Choose two running CloudLink lab instances."}), 400
+            if source_id == destination_id:
+                return jsonify({"error": "Choose two different instances."}), 400
+            if not (destination.private_ip if address_type == "private" else destination.public_ip):
+                return jsonify({"error": f"The destination has no {address_type} IP address."}), 400
+            if job_store is not None:
+                job = job_store.submit(source, destination, address_type=address_type, test_type=test_type, port=port)
+                job["status_url"] = f"/api/tests/{job['id']}"
+                return jsonify(job), 202
             result = run_probe(
                 session,
                 source,
