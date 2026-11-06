@@ -26,6 +26,9 @@ NODES = [
 class WebTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        analysis = patch("cloudlink.web.analyze_network", return_value={"status": "unknown", "summary": "Local fixture", "checks": []})
+        self.analysis = analysis.start()
+        self.addCleanup(analysis.stop)
         self.app = create_app(FakeSession(), Path(self.temp.name) / "history.sqlite3")
         self.client = self.app.test_client()
 
@@ -34,7 +37,8 @@ class WebTests(unittest.TestCase):
 
     def test_lab_form_uses_private_addresses_only(self):
         html = self.client.get("/").get_data(as_text=True)
-        self.assertIn("Private IP (same VPC)", html)
+        self.assertIn('class="fixed-address">Private IP</div>', html)
+        self.assertIn('id="network-findings"', html)
         self.assertNotIn('id="address-type"', html)
         self.assertNotIn('<option value="public">', html)
 
@@ -68,6 +72,7 @@ class WebTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["summary"], "HTTPS responded")
+        self.assertEqual(response.json["network_analysis"]["status"], "unknown")
         self.assertEqual(probe.call_args.kwargs["test_type"], "https")
         self.assertIsNone(probe.call_args.kwargs["port"])
         self.assertEqual(len(self.client.get("/api/history").json["tests"]), 1)
@@ -129,9 +134,10 @@ class WebTests(unittest.TestCase):
         store.queue.delete_message.assert_not_called()
         probe.assert_not_called()
 
+    @patch("cloudlink.worker.analyze_network", return_value={"status": "pass", "checks": []})
     @patch("cloudlink.worker.run_probe", return_value={"check": {"ok": True}})
     @patch("cloudlink.worker.discover_nodes", return_value=NODES)
-    def test_worker_saves_before_acknowledging(self, _discover, probe):
+    def test_worker_saves_before_acknowledging(self, _discover, probe, analysis):
         store = MagicMock()
         store.get.return_value = {"status": "queued", "deadline": int(time.time()) + 900,
                                   "source_id": "i-a", "destination_id": "i-b",
@@ -141,6 +147,7 @@ class WebTests(unittest.TestCase):
         with patch.dict(os.environ, {"CLOUDLINK_KEY_PATH": "/local-fixture"}):
             process_message(store, FakeSession(), {"Body": json.dumps({"id": "job-1"}), "ReceiptHandle": "receipt"})
         store.complete.assert_called_once_with("job-1", store.claim.call_args.args[1], probe.return_value)
+        self.assertEqual(store.complete.call_args.args[2]["network_analysis"], analysis.return_value)
         self.assertIs(type(probe.call_args.kwargs["port"]), int)
         self.assertEqual(probe.call_args.kwargs["port"], 8080)
         names = [call[0] for call in store.mock_calls]

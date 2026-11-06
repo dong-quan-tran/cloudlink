@@ -7,6 +7,7 @@ CloudLink is a guided network troubleshooting tool for cloud-hosted applications
 - Lets you choose a source and destination from the configured lab instances.
 - Runs a test from the source using ICMP ping, HTTP, HTTPS, an SSH server-banner check, or a custom TCP port.
 - Shows the result, a likely area to investigate, and a suggested next check.
+- Inspects direct VPC peering and the effective forward/return IPv4 routes, including missing routes and blackhole targets.
 - Saves recent results so you can compare before and after a configuration change.
 - Queues hosted requests and shows their progress while background workers run the checks.
 
@@ -22,6 +23,6 @@ CloudLink's application runs in its own VPC, with a load balancer and an Auto Sc
 
 The two private probe instances live in a separate lab VPC, reached through VPC peering. CloudLink discovers running instances tagged as its probes and connects to the selected source over private SSH. The source then runs the selected check against the destination. TCP 8080 and ICMP are allowed between the probes; peer-to-peer SSH is blocked to demonstrate a protocol-specific failure. The probes do not serve HTTP/HTTPS on ports 80/443.
 
-The dashboard is a shared class demo without user accounts. Individual probe nodes remain single instances. Route-table, ACL, security-group, and peering configuration analysis, along with additional network scenarios, are planned for phase two. Local development can still use the synchronous API and SQLite history.
+The dashboard is a shared class demo without user accounts. Individual probe nodes remain single instances. Peering and route findings are saved with each connectivity result and can be reopened from history. Configuration analysis currently covers local and directly peered private IPv4 paths; unsupported paths or unavailable AWS information are labeled as not assessed. Security-group and ACL analysis, along with additional network scenarios, remain future work. Local development can still use the synchronous API and SQLite history.
 
 CloudFormation and CloudShell scripts set up and tear down this environment in a personal AWS account.

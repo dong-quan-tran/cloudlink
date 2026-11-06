@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from .jobs import JobStore, TERMINAL
+from .network import analyze_network
 from .probe import discover_nodes, run_probe
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> N
             session, source, destination, **request,
             existing_key_path=os.environ["CLOUDLINK_KEY_PATH"], source_address_type="private",
         )
+        result["network_analysis"] = analyze_network(session, source, destination, request["address_type"])
         if store.complete(job_id, owner, result):
             acknowledge()
     except Exception:

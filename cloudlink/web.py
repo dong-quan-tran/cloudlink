@@ -12,6 +12,7 @@ from flask import Flask, jsonify, render_template, request, session as browser_s
 
 from .history import HistoryStore
 from .jobs import JobStore
+from .network import analyze_network
 from .probe import TEST_TYPES, discover_nodes, load_inventory, run_probe
 
 
@@ -141,6 +142,7 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
                 test_type=test_type,
                 port=port,
             )
+            result["network_analysis"] = analyze_network(session, source, destination, address_type)
             result["id"] = store.add(result)
             return jsonify(result)
         except ValueError as error:

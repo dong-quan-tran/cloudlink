@@ -34,6 +34,10 @@ function updateButton() {
   const port = Number($('tcp-port').value);
   const portValid = testType !== 'tcp' || ($('tcp-port').value !== '' && Number.isInteger(port) && port >= 1 && port <= 65535);
   $('run-test').disabled = busy || !($('source').value && $('destination').value && $('source').value !== $('destination').value && portValid);
+  ['source', 'destination'].forEach((side) => {
+    const node = nodes.find((item) => item.instance_id === $(side).value);
+    $(`${side}-meta`).textContent = node ? [node.vpc_id, node.subnet_id].filter(Boolean).join(' · ') : '';
+  });
 }
 
 function updateTestType() {
@@ -73,7 +77,7 @@ function showResult(result) {
   $('result-content').hidden = false;
   const healthy = result.check?.ok === true;
   $('result-badge').className = `result-badge${healthy ? '' : ' warn'}`;
-  $('result-badge').textContent = healthy ? '● TEST SUCCEEDED' : '● NEEDS ATTENTION';
+  $('result-badge').textContent = healthy ? '● LIVE CHECK SUCCEEDED' : '● LIVE CHECK NEEDS ATTENTION';
   $('result-time').textContent = shortTime(result.timestamp);
   $('result-summary').textContent = result.summary;
   const portLabel = result.port ? ` · port ${result.port}` : '';
@@ -81,7 +85,47 @@ function showResult(result) {
   $('check-label').textContent = testLabels[result.test_type] || 'TEST';
   $('check-status').textContent = result.check?.management_error ? 'Could not start' : result.check?.incomplete ? 'Incomplete' : healthy ? 'Successful' : 'Failed';
   $('check-detail').textContent = result.check?.detail || 'No test detail returned';
-  $('result-recommendation').textContent = result.recommendation;
+  const issue = result.network_analysis?.checks?.find((check) => check.status === 'fail');
+  $('result-recommendation').textContent = issue && !healthy
+    ? (result.check?.management_error ? `${result.recommendation} Separately, ${issue.label}: ${issue.detail}` : `${issue.label}: ${issue.detail}`)
+    : result.recommendation;
+  showNetwork(result.network_analysis, healthy);
+}
+
+function showNetwork(analysis, liveSucceeded) {
+  const labels = {pass: 'Looks correct', fail: 'Issue found', unknown: 'Couldn’t assess', not_required: 'Not needed'};
+  $('network-analysis').hidden = false;
+  const status = Object.hasOwn(labels, analysis?.status) ? analysis.status : 'unknown';
+  $('network-badge').className = `network-status ${status}`;
+  $('network-badge').textContent = analysis ? labels[status] : 'No saved snapshot';
+  $('network-summary').textContent = analysis?.summary || 'This older result has no saved routing information. Run a new diagnostic to inspect the configuration.';
+  if (liveSucceeded && status === 'fail') {
+    $('network-summary').textContent += ' The live check succeeded, so these findings may reflect a changed or unmodeled path. Review the evidence before changing anything.';
+  }
+  const list = $('network-findings');
+  list.replaceChildren();
+  (analysis?.checks || []).forEach((check) => {
+    const card = document.createElement('article'); card.className = 'network-finding';
+    const heading = document.createElement('div'); heading.className = 'network-finding-heading';
+    const title = document.createElement('h4'); title.textContent = check.label;
+    const state = Object.hasOwn(labels, check.status) ? check.status : 'unknown';
+    const badge = document.createElement('span'); badge.className = `network-status ${state}`; badge.textContent = labels[state];
+    heading.append(title, badge);
+    const detail = document.createElement('p'); detail.textContent = check.detail;
+    const evidence = document.createElement('dl'); evidence.className = 'network-evidence';
+    const rows = check.key === 'peering'
+      ? [['Source VPC', check.source_vpc], ['Dest. VPC', check.destination_vpc], ['Connection', check.connections?.map((peer) => `${peer.id} (${peer.state})`).join(', ')]]
+      : [['Table', check.table_id], ['Association', check.association], ['Destination', check.destination_ip], ['Match', check.cidr], ['Target', check.target], ['State', check.route_state]];
+    rows.forEach(([label, value]) => {
+      if (!value) return;
+      const term = document.createElement('dt'); term.textContent = label;
+      const description = document.createElement('dd'); description.textContent = value;
+      evidence.append(term, description);
+    });
+    card.append(heading, detail, evidence); list.append(card);
+  });
+  $('network-scope').textContent = analysis?.scope
+    ? `${analysis.scope} These findings describe the selected source-to-destination path, not CloudLink’s management SSH connection.` : '';
 }
 
 async function loadHistory() {
@@ -99,7 +143,12 @@ async function loadHistory() {
       return;
     }
     data.tests.forEach((test) => {
-      const row = document.createElement('div'); row.className = 'history-row';
+      const row = document.createElement('button'); row.type = 'button'; row.className = 'history-row';
+      row.disabled = !test.check;
+      row.addEventListener('click', () => {
+        showResult(test);
+        $('result-title').scrollIntoView({behavior: 'smooth', block: 'start'});
+      });
       const info = document.createElement('div');
       const title = document.createElement('strong'); title.textContent = `${test.source_name} → ${test.destination_name}`;
       const time = document.createElement('small'); time.textContent = `${shortTime(test.timestamp)} · ${testLabels[test.test_type] || 'LEGACY TEST'} · ${test.address_type} IP`;
@@ -118,7 +167,7 @@ async function runTest() {
   const button = $('run-test');
   busy = true;
   button.disabled = true;
-  button.textContent = 'Running test…';
+  button.textContent = 'Running diagnostics…';
   showNotice('');
   try {
     const response = await fetch('/api/tests', {
@@ -137,7 +186,7 @@ async function runTest() {
     }
     await loadHistory();
   } catch (error) { showNotice(error.message); }
-  finally { busy = false; button.innerHTML = 'Run connection test <span>→</span>'; updateButton(); }
+  finally { busy = false; button.innerHTML = 'Run diagnostics <span>→</span>'; updateButton(); }
 }
 
 async function followJob(id) {
@@ -175,7 +224,7 @@ async function resumeJob() {
   catch (error) { showNotice(error.message); }
   finally {
     busy = false;
-    $('run-test').innerHTML = 'Run connection test <span>→</span>';
+    $('run-test').innerHTML = 'Run diagnostics <span>→</span>';
     updateButton();
     await loadHistory();
   }
