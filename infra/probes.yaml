@@ -9,13 +9,9 @@ Parameters:
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-  SshKeyName:
+  ServicesStackName:
     Type: String
-    Default: ''
-    Description: Optional existing EC2 key pair; CloudLink installs its own management public key
-
-Conditions:
-  HasSshKey: !Not [!Equals [!Ref SshKeyName, '']]
+    Default: cloudlink-services
 
 Resources:
   InstanceA:
@@ -25,7 +21,8 @@ Resources:
       InstanceType: t3.micro
       CreditSpecification:
         CPUCredits: standard
-      KeyName: !If [HasSshKey, !Ref SshKeyName, !Ref 'AWS::NoValue']
+      KeyName:
+        Fn::ImportValue: !Sub '${ServicesStackName}-ProbeKeyName'
       PropagateTagsToVolumeOnCreation: true
       SubnetId:
         Fn::ImportValue:
@@ -69,17 +66,6 @@ Resources:
           UNIT
           systemctl daemon-reload
           systemctl enable --now cloudlink-health.service
-          install -d -m 0700 -o ec2-user -g ec2-user /home/ec2-user/.ssh
-          for attempt in $(seq 1 60); do
-            if curl -fsS --connect-timeout 2 --max-time 4 http://10.10.3.10/probe-key -o /tmp/cloudlink-probe.pub; then
-              break
-            fi
-            sleep 5
-          done
-          test -s /tmp/cloudlink-probe.pub
-          cat /tmp/cloudlink-probe.pub >> /home/ec2-user/.ssh/authorized_keys
-          chown ec2-user:ec2-user /home/ec2-user/.ssh/authorized_keys
-          chmod 0600 /home/ec2-user/.ssh/authorized_keys
 
   InstanceB:
     Type: AWS::EC2::Instance
@@ -88,7 +74,8 @@ Resources:
       InstanceType: t3.micro
       CreditSpecification:
         CPUCredits: standard
-      KeyName: !If [HasSshKey, !Ref SshKeyName, !Ref 'AWS::NoValue']
+      KeyName:
+        Fn::ImportValue: !Sub '${ServicesStackName}-ProbeKeyName'
       PropagateTagsToVolumeOnCreation: true
       SubnetId:
         Fn::ImportValue:
@@ -132,17 +119,6 @@ Resources:
           UNIT
           systemctl daemon-reload
           systemctl enable --now cloudlink-health.service
-          install -d -m 0700 -o ec2-user -g ec2-user /home/ec2-user/.ssh
-          for attempt in $(seq 1 60); do
-            if curl -fsS --connect-timeout 2 --max-time 4 http://10.10.3.10/probe-key -o /tmp/cloudlink-probe.pub; then
-              break
-            fi
-            sleep 5
-          done
-          test -s /tmp/cloudlink-probe.pub
-          cat /tmp/cloudlink-probe.pub >> /home/ec2-user/.ssh/authorized_keys
-          chown ec2-user:ec2-user /home/ec2-user/.ssh/authorized_keys
-          chmod 0600 /home/ec2-user/.ssh/authorized_keys
 
 Outputs:
   NodeAInstanceId:

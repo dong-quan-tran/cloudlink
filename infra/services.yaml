@@ -1,0 +1,111 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudLink shared job storage, queue, probe key, and application IAM role
+
+Resources:
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: id, AttributeType: S}
+        - {AttributeName: history_partition, AttributeType: S}
+        - {AttributeName: created_at, AttributeType: S}
+      KeySchema:
+        - {AttributeName: id, KeyType: HASH}
+      GlobalSecondaryIndexes:
+        - IndexName: history
+          KeySchema:
+            - {AttributeName: history_partition, KeyType: HASH}
+            - {AttributeName: created_at, KeyType: RANGE}
+          Projection: {ProjectionType: ALL}
+      TimeToLiveSpecification: {AttributeName: expires_at, Enabled: true}
+      SSESpecification: {SSEEnabled: true}
+      Tags: [{Key: Project, Value: CloudLink}]
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+  JobsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 150
+      ReceiveMessageWaitTimeSeconds: 20
+      MessageRetentionPeriod: 86400
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags: [{Key: Project, Value: CloudLink}]
+  ProbeKey:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Sub '${AWS::StackName}-probe-key'
+      KeyType: ed25519
+      Tags: [{Key: Project, Value: CloudLink}]
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudLinkRuntime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [ec2:DescribeInstances]
+                Resource: '*'
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]
+                Resource:
+                  - !GetAtt JobsTable.Arn
+                  - !Sub '${JobsTable.Arn}/index/*'
+              - Effect: Allow
+                Action: [sqs:SendMessage, sqs:ReceiveMessage, sqs:DeleteMessage, sqs:ChangeMessageVisibility, sqs:GetQueueAttributes]
+                Resource: !GetAtt JobsQueue.Arn
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ec2/keypair/${ProbeKey.KeyPairId}'
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+                    'kms:EncryptionContext:PARAMETER_ARN': !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ec2/keypair/${ProbeKey.KeyPairId}'
+              - Effect: Allow
+                Action: cloudformation:SignalResource
+                Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/cloudlink-web/*'
+  AppProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref AppRole]
+
+Outputs:
+  TableName:
+    Value: !Ref JobsTable
+    Export: {Name: !Sub '${AWS::StackName}-TableName'}
+  QueueUrl:
+    Value: !Ref JobsQueue
+    Export: {Name: !Sub '${AWS::StackName}-QueueUrl'}
+  QueueName:
+    Value: !GetAtt JobsQueue.QueueName
+    Export: {Name: !Sub '${AWS::StackName}-QueueName'}
+  DeadLetterQueueUrl:
+    Value: !Ref DeadLetterQueue
+  ProbeKeyName:
+    Value: !Ref ProbeKey
+    Export: {Name: !Sub '${AWS::StackName}-ProbeKeyName'}
+  KeyParameterName:
+    Value: !Sub '/ec2/keypair/${ProbeKey.KeyPairId}'
+    Export: {Name: !Sub '${AWS::StackName}-KeyParameterName'}
+  AppProfileName:
+    Value: !Ref AppProfile
+    Export: {Name: !Sub '${AWS::StackName}-AppProfileName'}

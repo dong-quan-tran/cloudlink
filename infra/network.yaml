@@ -1,262 +1,188 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudLink VPC with a public web subnet and two private probe subnets
-
+Description: CloudLink application VPC across two AZs, peered with a private lab VPC
 Parameters:
-  AvailabilityZone:
-    Type: AWS::EC2::AvailabilityZone::Name
-    Default: us-east-1a
-    Description: Availability Zone for the current single-zone lab
-  ManagementCidr:
+  CloudFrontPrefixListId:
     Type: String
-    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/32$'
-    ConstraintDescription: Supply one public IPv4 address followed by /32
-    Description: Public IPv4 address allowed to SSH to the web instance
-  WebClientCidr:
-    Type: String
-    Default: 0.0.0.0/0
-    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$'
-    ConstraintDescription: Supply an IPv4 CIDR range, such as 0.0.0.0/0 or 203.0.113.10/32
-    Description: IPv4 range allowed to open the demo dashboard on HTTP port 80
-  EnablePeerSsh:
-    Type: String
-    Default: 'false'
-    AllowedValues: ['true', 'false']
-    Description: Allow SSH banner tests between probe nodes (off by default for troubleshooting)
-
-Conditions:
-  PeerSshEnabled: !Equals [!Ref EnablePeerSsh, 'true']
+    Description: AWS managed CloudFront origin-facing prefix list in us-east-1
 
 Resources:
+  AppVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: CloudLink-App-VPC}, {Key: Project, Value: CloudLink}]
   LabVpc:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: 10.10.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: CloudLink-VPC
-        - Key: Project
-          Value: CloudLink
-
-  SubnetA:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref LabVpc
-      AvailabilityZone: !Ref AvailabilityZone
-      CidrBlock: 10.10.1.0/24
-      MapPublicIpOnLaunch: false
-      Tags:
-        - Key: Name
-          Value: CloudLink-Private-Subnet-A
-        - Key: Project
-          Value: CloudLink
-
-  SubnetB:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref LabVpc
-      AvailabilityZone: !Ref AvailabilityZone
-      CidrBlock: 10.10.2.0/24
-      MapPublicIpOnLaunch: false
-      Tags:
-        - Key: Name
-          Value: CloudLink-Private-Subnet-B
-        - Key: Project
-          Value: CloudLink
-
-  WebSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref LabVpc
-      AvailabilityZone: !Ref AvailabilityZone
-      CidrBlock: 10.10.3.0/24
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: CloudLink-Web-Subnet
-        - Key: Project
-          Value: CloudLink
-
+      Tags: [{Key: Name, Value: CloudLink-Lab-VPC}, {Key: Project, Value: CloudLink}]
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
-      Tags:
-        - Key: Name
-          Value: CloudLink-IGW
-        - Key: Project
-          Value: CloudLink
-
+      Tags: [{Key: Name, Value: CloudLink-App-IGW}]
   GatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref AppVpc
+  LabPeering:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !Ref AppVpc
+      PeerVpcId: !Ref LabVpc
+      Tags: [{Key: Name, Value: CloudLink-App-to-Lab}]
+  AppSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AppVpc
+      AvailabilityZone: us-east-1a
+      CidrBlock: 10.20.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: CloudLink-App-Subnet-A}]
+  AppRoutesA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AppVpc
+      Tags: [{Key: Name, Value: CloudLink-App-Routes-A}]
+  AppRouteAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref AppRoutesA
+      SubnetId: !Ref AppSubnetA
+  AppPeeringRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref AppRoutesA
+      DestinationCidrBlock: 10.10.0.0/16
+      VpcPeeringConnectionId: !Ref LabPeering
+  ProbeSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
       VpcId: !Ref LabVpc
-
-  PublicRouteTable:
+      AvailabilityZone: us-east-1a
+      CidrBlock: 10.10.1.0/24
+      MapPublicIpOnLaunch: false
+      Tags: [{Key: Name, Value: CloudLink-Probe-Subnet-A}]
+  ProbeRoutesA:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref LabVpc
-      Tags:
-        - Key: Name
-          Value: CloudLink-Public-Routes
-        - Key: Project
-          Value: CloudLink
-
-  ProbeRouteTableA:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref LabVpc
-      Tags:
-        - Key: Name
-          Value: CloudLink-Private-Routes-A
-        - Key: Project
-          Value: CloudLink
-
-  ProbeRouteTableB:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref LabVpc
-      Tags:
-        - Key: Name
-          Value: CloudLink-Private-Routes-B
-        - Key: Project
-          Value: CloudLink
-
-  RouteAssociationA:
+      Tags: [{Key: Name, Value: CloudLink-Probe-Routes-A}]
+  ProbeRouteAssociationA:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      RouteTableId: !Ref ProbeRouteTableA
-      SubnetId: !Ref SubnetA
-
-  RouteAssociationB:
-    Type: AWS::EC2::SubnetRouteTableAssociation
+      RouteTableId: !Ref ProbeRoutesA
+      SubnetId: !Ref ProbeSubnetA
+  ProbePeeringRouteA:
+    Type: AWS::EC2::Route
     Properties:
-      RouteTableId: !Ref ProbeRouteTableB
-      SubnetId: !Ref SubnetB
-
-  WebRouteAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      RouteTableId: !Ref PublicRouteTable
-      SubnetId: !Ref WebSubnet
-
-  PublicRoute:
+      RouteTableId: !Ref ProbeRoutesA
+      DestinationCidrBlock: 10.20.0.0/16
+      VpcPeeringConnectionId: !Ref LabPeering
+  AppInternetRouteA:
     Type: AWS::EC2::Route
     DependsOn: GatewayAttachment
     Properties:
-      RouteTableId: !Ref PublicRouteTable
+      RouteTableId: !Ref AppRoutesA
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
-
-  SecurityGroupA:
+  AppSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AppVpc
+      AvailabilityZone: us-east-1b
+      CidrBlock: 10.20.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: CloudLink-App-Subnet-B}]
+  AppRoutesB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AppVpc
+      Tags: [{Key: Name, Value: CloudLink-App-Routes-B}]
+  AppRouteAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref AppRoutesB
+      SubnetId: !Ref AppSubnetB
+  AppPeeringRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref AppRoutesB
+      DestinationCidrBlock: 10.10.0.0/16
+      VpcPeeringConnectionId: !Ref LabPeering
+  ProbeSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVpc
+      AvailabilityZone: us-east-1b
+      CidrBlock: 10.10.2.0/24
+      MapPublicIpOnLaunch: false
+      Tags: [{Key: Name, Value: CloudLink-Probe-Subnet-B}]
+  ProbeRoutesB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref LabVpc
+      Tags: [{Key: Name, Value: CloudLink-Probe-Routes-B}]
+  ProbeRouteAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref ProbeRoutesB
+      SubnetId: !Ref ProbeSubnetB
+  ProbePeeringRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref ProbeRoutesB
+      DestinationCidrBlock: 10.20.0.0/16
+      VpcPeeringConnectionId: !Ref LabPeering
+  AppInternetRouteB:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref AppRoutesB
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: CloudLink probe node A access
-      VpcId: !Ref LabVpc
-      Tags:
-        - Key: Name
-          Value: CloudLink-SG-A
-        - Key: Project
-          Value: CloudLink
-
-  SecurityGroupB:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: CloudLink probe node B access
-      VpcId: !Ref LabVpc
-      Tags:
-        - Key: Name
-          Value: CloudLink-SG-B
-        - Key: Project
-          Value: CloudLink
-
-  WebSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: CloudLink web instance management and browser access
-      VpcId: !Ref LabVpc
+      GroupDescription: HTTP origin access from CloudFront only
+      VpcId: !Ref AppVpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: !Ref WebClientCidr
+          SourcePrefixListId: !Ref CloudFrontPrefixListId
+      Tags: [{Key: Name, Value: CloudLink-ALB-SG}]
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Application access from the load balancer only
+      VpcId: !Ref AppVpc
+      SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: !Ref ManagementCidr
-      Tags:
-        - Key: Name
-          Value: CloudLink-Web-SG
-        - Key: Project
-          Value: CloudLink
-
-  WebHttpFromA:
-    Type: AWS::EC2::SecurityGroupIngress
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      Tags: [{Key: Name, Value: CloudLink-App-SG}]
+  SecurityGroupA:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupId: !Ref WebSecurityGroup
-      IpProtocol: tcp
-      FromPort: 80
-      ToPort: 80
-      SourceSecurityGroupId: !Ref SecurityGroupA
-
-  WebHttpFromB:
+      GroupDescription: Private probe A
+      VpcId: !Ref LabVpc
+      Tags: [{Key: Name, Value: CloudLink-Probe-A-SG}]
+  ProbeAManagementSsh:
     Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref WebSecurityGroup
-      IpProtocol: tcp
-      FromPort: 80
-      ToPort: 80
-      SourceSecurityGroupId: !Ref SecurityGroupB
-
-  NodeASshFromWeb:
-    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: LabPeering
     Properties:
       GroupId: !Ref SecurityGroupA
       IpProtocol: tcp
       FromPort: 22
       ToPort: 22
-      SourceSecurityGroupId: !Ref WebSecurityGroup
-
-  NodeBSshFromWeb:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref SecurityGroupB
-      IpProtocol: tcp
-      FromPort: 22
-      ToPort: 22
-      SourceSecurityGroupId: !Ref WebSecurityGroup
-
-  NodeASshFromB:
-    Type: AWS::EC2::SecurityGroupIngress
-    Condition: PeerSshEnabled
-    Properties:
-      GroupId: !Ref SecurityGroupA
-      IpProtocol: tcp
-      FromPort: 22
-      ToPort: 22
-      SourceSecurityGroupId: !Ref SecurityGroupB
-
-  NodeBSshFromA:
-    Type: AWS::EC2::SecurityGroupIngress
-    Condition: PeerSshEnabled
-    Properties:
-      GroupId: !Ref SecurityGroupB
-      IpProtocol: tcp
-      FromPort: 22
-      ToPort: 22
-      SourceSecurityGroupId: !Ref SecurityGroupA
-
-  NodeAHttpFromB:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref SecurityGroupA
-      IpProtocol: tcp
-      FromPort: 8080
-      ToPort: 8080
-      SourceSecurityGroupId: !Ref SecurityGroupB
-
-  NodeAIcmpFromB:
+      SourceSecurityGroupId: !Ref AppSecurityGroup
+  ProbeAIcmp:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
       GroupId: !Ref SecurityGroupA
@@ -264,42 +190,79 @@ Resources:
       FromPort: -1
       ToPort: -1
       SourceSecurityGroupId: !Ref SecurityGroupB
-
-  NodeBHttpFromA:
+  ProbeATcp8080:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      GroupId: !Ref SecurityGroupB
+      GroupId: !Ref SecurityGroupA
       IpProtocol: tcp
       FromPort: 8080
       ToPort: 8080
-      SourceSecurityGroupId: !Ref SecurityGroupA
-
-  NodeBIcmpFromA:
+      SourceSecurityGroupId: !Ref SecurityGroupB
+  SecurityGroupB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Private probe B
+      VpcId: !Ref LabVpc
+      Tags: [{Key: Name, Value: CloudLink-Probe-B-SG}]
+  ProbeBManagementSsh:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: LabPeering
+    Properties:
+      GroupId: !Ref SecurityGroupB
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref AppSecurityGroup
+  ProbeBIcmp:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
       GroupId: !Ref SecurityGroupB
       IpProtocol: icmp
       FromPort: -1
       ToPort: -1
+      SourceSecurityGroupId: !Ref SecurityGroupA
+  ProbeBTcp8080:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroupB
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
       SourceSecurityGroupId: !Ref SecurityGroupA
 
 Outputs:
+  AppVpcId:
+    Value: !Ref AppVpc
+    Export:
+      Name: !Sub '${AWS::StackName}-AppVpcId'
   VpcId:
     Value: !Ref LabVpc
     Export:
       Name: !Sub '${AWS::StackName}-VpcId'
+  AppSubnetAId:
+    Value: !Ref AppSubnetA
+    Export:
+      Name: !Sub '${AWS::StackName}-AppSubnetAId'
+  AppSubnetBId:
+    Value: !Ref AppSubnetB
+    Export:
+      Name: !Sub '${AWS::StackName}-AppSubnetBId'
   SubnetAId:
-    Value: !Ref SubnetA
+    Value: !Ref ProbeSubnetA
     Export:
       Name: !Sub '${AWS::StackName}-SubnetAId'
   SubnetBId:
-    Value: !Ref SubnetB
+    Value: !Ref ProbeSubnetB
     Export:
       Name: !Sub '${AWS::StackName}-SubnetBId'
-  WebSubnetId:
-    Value: !Ref WebSubnet
+  AppSecurityGroupId:
+    Value: !Ref AppSecurityGroup
     Export:
-      Name: !Sub '${AWS::StackName}-WebSubnetId'
+      Name: !Sub '${AWS::StackName}-AppSecurityGroupId'
+  LoadBalancerSecurityGroupId:
+    Value: !Ref LoadBalancerSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LoadBalancerSecurityGroupId'
   SecurityGroupAId:
     Value: !Ref SecurityGroupA
     Export:
@@ -308,15 +271,3 @@ Outputs:
     Value: !Ref SecurityGroupB
     Export:
       Name: !Sub '${AWS::StackName}-SecurityGroupBId'
-  WebSecurityGroupId:
-    Value: !Ref WebSecurityGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-WebSecurityGroupId'
-  ProbeRouteTableAId:
-    Value: !Ref ProbeRouteTableA
-    Export:
-      Name: !Sub '${AWS::StackName}-ProbeRouteTableAId'
-  ProbeRouteTableBId:
-    Value: !Ref ProbeRouteTableB
-    Export:
-      Name: !Sub '${AWS::StackName}-ProbeRouteTableBId'
