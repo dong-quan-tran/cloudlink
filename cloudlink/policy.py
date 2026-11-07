@@ -40,6 +40,11 @@ def api_error(error: Exception) -> str:
     return "AWS network information is temporarily unavailable. Retry this check."
 
 
+def resource_name(resource: dict[str, Any], fallback: str) -> str:
+    return next((tag["Value"].strip() for tag in resource.get("Tags", [])
+                 if tag.get("Key") == "Name" and tag.get("Value", "").strip()), fallback)
+
+
 def contains(cidr: str, address: str) -> bool:
     return ip_address(address) in ip_network(cidr)
 
@@ -61,7 +66,10 @@ def rule_label(proto: str, low: int, high: int) -> str:
 
 def group_check(key: str, label: str, groups: dict[str, Any], node: Node, peer: Node,
                 outbound: bool, test_type: str, port: int | None, group_refs: bool) -> dict[str, Any]:
-    evidence = {"resources": list(node.security_group_ids)}
+    names = {group_id: resource_name(group, group.get("GroupName") or "Security group")
+             for group_id, group in groups.items()}
+    evidence = {"resources": list(node.security_group_ids),
+                "resource_names": [names.get(group_id, "Security group") for group_id in node.security_group_ids]}
     if not node.security_group_ids or any(group not in groups for group in node.security_group_ids):
         return finding(key, label, "unknown", "Could not read all security groups attached to this instance.", **evidence)
     rules, unresolved = [], False
@@ -76,17 +84,18 @@ def group_check(key: str, label: str, groups: dict[str, Any], node: Node, peer: 
             matches = [item["CidrIp"] for item in rule.get("IpRanges", []) if contains(item["CidrIp"], peer.private_ip)]
             refs = [item["GroupId"] for item in rule.get("UserIdGroupPairs", [])
                     if item.get("GroupId") in peer.security_group_ids]
+            ref_names = [names.get(ref, "Peer security group") for ref in refs]
             if group_refs:
-                matches.extend(refs)
+                matches.extend(ref_names)
             elif refs:
                 unresolved = True
             prefixes = [item["PrefixListId"] for item in rule.get("PrefixListIds", [])]
             if prefixes:
                 unresolved = True
             if matches or refs or prefixes:
-                targets = matches + [f"{ref} (unverified)" for ref in refs if not group_refs]
+                targets = matches + [f"{name} (unverified)" for name in ref_names if not group_refs]
                 targets += [f"{prefix} (unresolved)" for prefix in prefixes]
-                rules.append((bool(matches), f"{group_id} · {rule_label(proto, low, high)} · {', '.join(targets)}"))
+                rules.append((bool(matches), f"{names[group_id]} · {rule_label(proto, low, high)} · {', '.join(targets)}"))
     evidence["rules"] = [description for _, description in rules]
     if any(matched for matched, _ in rules):
         if test_type == "overview":
@@ -103,7 +112,8 @@ def acl_check(key: str, label: str, acl: dict[str, Any], peer_ip: str, source: b
     entries = sorted((entry for entry in acl.get("Entries", [])
                       if entry.get("CidrBlock") and contains(entry["CidrBlock"], peer_ip)),
                      key=lambda entry: entry["RuleNumber"])
-    evidence: dict[str, Any] = {"resources": [acl["NetworkAclId"]]}
+    name = resource_name(acl, "Default network ACL" if acl.get("IsDefault") else "Subnet network ACL")
+    evidence: dict[str, Any] = {"resources": [acl["NetworkAclId"]], "resource_names": [name]}
     outcomes, lines = [], []
     for reply in (False, True):
         outbound = source != reply

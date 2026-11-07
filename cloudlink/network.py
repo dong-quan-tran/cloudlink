@@ -9,13 +9,16 @@ from typing import Any
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
-from .policy import POLICY_LABELS, api_error, describe, finding, inspect_policy
+from .policy import POLICY_LABELS, api_error, describe, finding, inspect_policy, resource_name
 from .probe import TEST_PORTS, Node
 
 SCOPE = "Private IPv4 in one AWS Region, within a VPC or through direct VPC peering. Configuration cannot confirm that the destination service is listening or that its host firewall allows traffic."
 TARGETS = ("GatewayId", "VpcPeeringConnectionId", "TransitGatewayId", "NatGatewayId",
            "NetworkInterfaceId", "InstanceId", "VpcEndpointId", "LocalGatewayId",
            "CarrierGatewayId", "CoreNetworkArn", "OdbNetworkArn")
+TARGET_NAMES = {"pcx-": "VPC peering connection", "igw-": "Internet gateway", "tgw-": "Transit gateway",
+                "nat-": "NAT gateway", "eni-": "Network interface", "vgw-": "Virtual private gateway",
+                "vpce-": "VPC endpoint"}
 
 
 def route_snapshot(ec2: Any, node: Node, address: str) -> dict[str, Any]:
@@ -35,7 +38,8 @@ def route_snapshot(ec2: Any, node: Node, address: str) -> dict[str, Any]:
         if len(tables) != 1:
             return {"error": "Could not identify a single effective route table for this subnet."}
         table = tables[0]
-        evidence = {"table_id": table["RouteTableId"], "association": association,
+        name = resource_name(table, "VPC main route table" if association == "VPC main table" else "Subnet route table")
+        evidence = {"table_id": table["RouteTableId"], "table_name": name, "association": association,
                     "subnet_id": node.subnet_id, "destination_ip": address}
         for item in table.get("Associations", []):
             if item.get("SubnetId") == node.subnet_id and item.get("AssociationState", {}).get("State", "associated") != "associated":
@@ -79,7 +83,9 @@ def peering_check(ec2: Any, source: Node, destination: Node, snapshots: list[dic
         } == set(vpcs)]
         active = {peer["VpcPeeringConnectionId"] for peer in peers if peer.get("Status", {}).get("Code") == "active"}
         evidence = {"source_vpc": source.vpc_id, "destination_vpc": destination.vpc_id,
-                    "connections": [{"id": peer["VpcPeeringConnectionId"], "state": peer.get("Status", {}).get("Code", "unknown")} for peer in peers]}
+                    "connections": [{"id": peer["VpcPeeringConnectionId"],
+                                     "name": resource_name(peer, "VPC peering connection"),
+                                     "state": peer.get("Status", {}).get("Code", "unknown")} for peer in peers]}
         if active:
             return finding("peering", "VPC peering", "pass", "An active direct peering connection links the two VPCs. Routes still need to use it.", **evidence), active
         # An appliance/TGW/prefix-list path might work without direct peering.
@@ -95,16 +101,20 @@ def peering_check(ec2: Any, source: Node, destination: Node, snapshots: list[dic
         return finding("peering", "VPC peering", "unknown", api_error(error)), None
 
 
-def route_check(key: str, label: str, snapshot: dict[str, Any], same_vpc: bool, active_peers: set[str] | None) -> dict[str, Any]:
+def route_check(key: str, label: str, snapshot: dict[str, Any], same_vpc: bool,
+                active_peers: set[str] | None, peer_names: dict[str, str]) -> dict[str, Any]:
     evidence = {key: value for key, value in snapshot.items() if key not in ("error", "route")}
     if snapshot.get("error"):
         return finding(key, label, "unknown", snapshot["error"], **evidence)
     route = snapshot.get("route")
     if route is None:
-        return finding(key, label, "fail", f"No IPv4 route in {snapshot['table_id']} matches {snapshot['destination_ip']}. Add the required route for this direction.", **evidence)
+        return finding(key, label, "fail", f"No IPv4 route in {snapshot['table_name']} matches {snapshot['destination_ip']}. Add the required route for this direction.", **evidence)
     target = snapshot["target"]
+    target_name = peer_names.get(target) or next((name for prefix, name in TARGET_NAMES.items()
+                                                if target.startswith(prefix)), "Local VPC" if target == "local" else "Other route target")
+    evidence["target_name"] = target_name
     if route.get("State") == "blackhole":
-        return finding(key, label, "fail", f"The most-specific route ({snapshot['cidr']} → {target}) is a blackhole. Restore its target or replace the route; a less-specific route will not take over.", **evidence)
+        return finding(key, label, "fail", f"The most-specific route ({snapshot['cidr']} → {target_name}) is a blackhole. Restore its target or replace the route; a less-specific route will not take over.", **evidence)
     if route.get("State") != "active":
         return finding(key, label, "unknown", "The selected route is not reported as active. Retry after its state is stable.", **evidence)
     if target == "local":
@@ -121,7 +131,7 @@ def route_check(key: str, label: str, snapshot: dict[str, Any], same_vpc: bool, 
     elif str(target).startswith("igw-"):
         status, detail = "fail", "The selected route points to an internet gateway, which does not provide this private-IP path. Add the required local or direct-peering route."
     else:
-        status, detail = "unknown", f"The selected route uses {target}. Appliance, NAT, VPN, and transit-gateway paths are outside this version's analysis."
+        status, detail = "unknown", f"The selected route uses this target: {target_name}. Appliance, NAT, VPN, and transit-gateway paths are outside this version's analysis."
     return finding(key, label, status, detail, **evidence)
 
 
@@ -161,8 +171,9 @@ def analyze_network(session: Any, source: Node, destination: Node, address_type:
         else:
             snapshots = [route_snapshot(ec2, source, destination.private_ip), route_snapshot(ec2, destination, source.private_ip)]
             peer, active = peering_check(ec2, source, destination, snapshots)
-            checks = [peer, route_check(*labels[1], snapshots[0], same_vpc, active),
-                      route_check(*labels[2], snapshots[1], same_vpc, active)]
+            peer_names = {connection["id"]: connection["name"] for connection in peer.get("connections", [])}
+            checks = [peer, route_check(*labels[1], snapshots[0], same_vpc, active, peer_names),
+                      route_check(*labels[2], snapshots[1], same_vpc, active, peer_names)]
             group_refs = all(check["status"] == "pass" for check in checks[1:])
         if test_type:
             checks.extend(inspect_policy(ec2, source, destination, test_type, TEST_PORTS.get(test_type, port), group_refs))

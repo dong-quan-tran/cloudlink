@@ -81,7 +81,13 @@ class NetworkTests(unittest.TestCase):
 
     def test_active_peering_requires_a_valid_return_route(self):
         self.cross_vpc()
-        self.assertEqual(self.inspect()["status"], "pass")
+        self.ec2.explicit["subnet-a"]["Tags"] = [{"Key": "Name", "Value": "Probe A routes"}]
+        self.ec2.peers[0]["Tags"] = [{"Key": "Name", "Value": "Probe VPC peering"}]
+        working = self.inspect()
+        self.assertEqual(working["status"], "pass")
+        self.assertEqual(working["checks"][1]["table_name"], "Probe A routes")
+        self.assertEqual(working["checks"][1]["target_name"], "Probe VPC peering")
+        self.assertEqual(working["checks"][1]["target"], "pcx-ab")
         self.ec2.explicit["subnet-b"]["Routes"].pop()
         result = self.inspect()
         self.assertEqual([check["status"] for check in result["checks"]], ["pass", "pass", "fail"])
@@ -117,17 +123,22 @@ class NetworkTests(unittest.TestCase):
         self.b = replace(self.b, security_group_ids=("sg-b",))
         self.ec2.describe_security_groups = lambda **_: {"SecurityGroups": [
             {"GroupId": "sg-a", "IpPermissionsEgress": [{"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}]},
-            {"GroupId": "sg-b", "IpPermissions": [{"IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080,
+            {"GroupId": "sg-b", "GroupName": "destination-group", "Tags": [{"Key": "Name", "Value": "Probe B firewall"}],
+             "IpPermissions": [{"IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080,
                                                     "UserIdGroupPairs": [{"GroupId": "sg-a"}]}]},
         ]}
         entries = [{"RuleNumber": 100, "Egress": outbound, "Protocol": "-1", "RuleAction": "allow", "CidrBlock": "0.0.0.0/0"}
                    for outbound in (True, False)]
         self.ec2.describe_network_acls = lambda **_: {"NetworkAcls": [
             {"NetworkAclId": "acl-a", "Associations": [{"SubnetId": "subnet-a"}], "Entries": entries},
-            {"NetworkAclId": "acl-b", "Associations": [{"SubnetId": "subnet-b"}], "Entries": entries[:2]},
+            {"NetworkAclId": "acl-b", "IsDefault": True, "Associations": [{"SubnetId": "subnet-b"}], "Entries": entries[:2]},
         ]}
         overview = analyze_network(self.session, self.a, self.b, test_type="overview")
         self.assertEqual(overview["status"], "review")
+        checks = {check["key"]: check for check in overview["checks"]}
+        self.assertEqual(checks["destination_sg"]["resource_names"], ["Probe B firewall"])
+        self.assertEqual(checks["destination_sg"]["resources"], ["sg-b"])
+        self.assertEqual(checks["destination_acl"]["resource_names"], ["Default network ACL"])
         self.assertEqual(analyze_network(self.session, self.a, self.b, test_type="tcp", port=8080)["status"], "pass")
         https = analyze_network(self.session, self.a, self.b, test_type="https")
         self.assertEqual(next(check for check in https["checks"] if check["key"] == "destination_sg")["status"], "fail")
