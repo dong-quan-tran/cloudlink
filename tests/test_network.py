@@ -112,6 +112,36 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual([check["status"] for check in result["checks"]], ["unknown"] * 3)
         self.assertIn("UnauthorizedOperation", result["checks"][1]["detail"])
 
+    def test_policy_checks_group_references_and_ordered_acl_reply_rules(self):
+        self.a = replace(self.a, security_group_ids=("sg-a",))
+        self.b = replace(self.b, security_group_ids=("sg-b",))
+        self.ec2.describe_security_groups = lambda **_: {"SecurityGroups": [
+            {"GroupId": "sg-a", "IpPermissionsEgress": [{"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}]},
+            {"GroupId": "sg-b", "IpPermissions": [{"IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080,
+                                                    "UserIdGroupPairs": [{"GroupId": "sg-a"}]}]},
+        ]}
+        entries = [{"RuleNumber": 100, "Egress": outbound, "Protocol": "-1", "RuleAction": "allow", "CidrBlock": "0.0.0.0/0"}
+                   for outbound in (True, False)]
+        self.ec2.describe_network_acls = lambda **_: {"NetworkAcls": [
+            {"NetworkAclId": "acl-a", "Associations": [{"SubnetId": "subnet-a"}], "Entries": entries},
+            {"NetworkAclId": "acl-b", "Associations": [{"SubnetId": "subnet-b"}], "Entries": entries[:2]},
+        ]}
+        overview = analyze_network(self.session, self.a, self.b, test_type="overview")
+        self.assertEqual(overview["status"], "review")
+        self.assertEqual(analyze_network(self.session, self.a, self.b, test_type="tcp", port=8080)["status"], "pass")
+        https = analyze_network(self.session, self.a, self.b, test_type="https")
+        self.assertEqual(next(check for check in https["checks"] if check["key"] == "destination_sg")["status"], "fail")
+
+        deny = {"RuleNumber": 90, "Egress": False, "Protocol": "6", "RuleAction": "deny",
+                "CidrBlock": "10.10.2.0/24", "PortRange": {"From": 1024, "To": 65000}}
+        entries.append(deny)
+        self.assertEqual(analyze_network(self.session, self.a, self.b, test_type="tcp", port=8080)["status"], "unknown")
+        deny["PortRange"]["To"] = 65535
+        blocked = analyze_network(self.session, self.a, self.b, test_type="tcp", port=8080)
+        source_acl = next(check for check in blocked["checks"] if check["key"] == "source_acl")
+        self.assertEqual(blocked["status"], "fail")
+        self.assertIn("Reply inbound · #90 deny", source_acl["rules"])
+
 
 if __name__ == "__main__":
     unittest.main()

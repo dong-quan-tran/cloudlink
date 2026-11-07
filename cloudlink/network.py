@@ -1,41 +1,21 @@
-"""Read-only IPv4 route inspection for local and directly peered VPC paths."""
+"""Read-only IPv4 configuration inspection for local and directly peered VPC paths."""
 
 from __future__ import annotations
 
 import ipaddress
+from datetime import datetime, timezone
 from typing import Any
 
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
-from .probe import Node
+from .policy import POLICY_LABELS, api_error, describe, finding, inspect_policy
+from .probe import TEST_PORTS, Node
 
-SCOPE = "Private IPv4 routes in one AWS Region, within a VPC or through direct VPC peering. Security groups and network ACLs are not checked yet."
+SCOPE = "Private IPv4 in one AWS Region, within a VPC or through direct VPC peering. Configuration cannot confirm that the destination service is listening or that its host firewall allows traffic."
 TARGETS = ("GatewayId", "VpcPeeringConnectionId", "TransitGatewayId", "NatGatewayId",
            "NetworkInterfaceId", "InstanceId", "VpcEndpointId", "LocalGatewayId",
            "CarrierGatewayId", "CoreNetworkArn", "OdbNetworkArn")
-
-
-def finding(key: str, label: str, status: str, detail: str, **evidence: Any) -> dict[str, Any]:
-    return {"key": key, "label": label, "status": status, "detail": detail, **evidence}
-
-
-def describe(ec2: Any, operation: str, field: str, filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    result = []
-    request: dict[str, Any] = {"Filters": filters}
-    while True:
-        page = getattr(ec2, operation)(**request)
-        result.extend(page.get(field, []))
-        if not page.get("NextToken"):
-            return result
-        request["NextToken"] = page["NextToken"]
-
-
-def api_error(error: Exception) -> str:
-    if isinstance(error, ClientError):
-        code = error.response["Error"]["Code"]
-        return f"AWS returned {code}. Check the app's EC2 read permissions and retry."
-    return "AWS network information is temporarily unavailable. Retry this check."
 
 
 def route_snapshot(ec2: Any, node: Node, address: str) -> dict[str, Any]:
@@ -145,14 +125,16 @@ def route_check(key: str, label: str, snapshot: dict[str, Any], same_vpc: bool, 
     return finding(key, label, status, detail, **evidence)
 
 
-def analyze_network(session: Any, source: Node, destination: Node, address_type: str = "private") -> dict[str, Any]:
+def analyze_network(session: Any, source: Node, destination: Node, address_type: str = "private",
+                    test_type: str | None = None, port: int | None = None) -> dict[str, Any]:
     labels = (("peering", "VPC peering"), ("forward_route", "Source → destination route"),
               ("return_route", "Destination → source route"))
+    all_labels = labels + POLICY_LABELS if test_type else labels
     reason = None
     if address_type != "private":
         reason = "Configuration analysis currently supports private IPv4 destinations only."
     elif not session:
-        reason = "AWS access is required to inspect VPC peering and route tables."
+        reason = "AWS access is required to read network configuration."
     elif not all((source.vpc_id, destination.vpc_id, source.subnet_id, destination.subnet_id)):
         reason = "VPC and subnet metadata are required for both instances."
     try:
@@ -163,15 +145,16 @@ def analyze_network(session: Any, source: Node, destination: Node, address_type:
     except ValueError:
         reason = "Both instances need valid private IPv4 addresses for configuration analysis."
     if reason:
-        checks = [finding(key, label, "unknown", reason) for key, label in labels]
+        checks = [finding(key, label, "unknown", reason) for key, label in all_labels]
     else:
         try:
             ec2 = session.client("ec2", config=Config(connect_timeout=3, read_timeout=5,
                                                      retries={"mode": "standard", "total_max_attempts": 2}))
         except (ClientError, BotoCoreError) as error:
             return {"status": "unknown", "summary": api_error(error), "scope": SCOPE,
-                    "checks": [finding(key, label, "unknown", api_error(error)) for key, label in labels]}
+                    "checks": [finding(key, label, "unknown", api_error(error)) for key, label in all_labels]}
         same_vpc = source.vpc_id == destination.vpc_id
+        group_refs = True
         if same_vpc and source.subnet_id == destination.subnet_id:
             checks = [finding("peering", "VPC peering", "not_required", "Both instances are in the same VPC; no peering is needed.")]
             checks += [finding(key, label, "not_required", "Both instances share a subnet. A route-table lookup does not establish whether their within-subnet traffic can pass.") for key, label in labels[1:]]
@@ -180,11 +163,29 @@ def analyze_network(session: Any, source: Node, destination: Node, address_type:
             peer, active = peering_check(ec2, source, destination, snapshots)
             checks = [peer, route_check(*labels[1], snapshots[0], same_vpc, active),
                       route_check(*labels[2], snapshots[1], same_vpc, active)]
+            group_refs = all(check["status"] == "pass" for check in checks[1:])
+        if test_type:
+            checks.extend(inspect_policy(ec2, source, destination, test_type, TEST_PORTS.get(test_type, port), group_refs))
     status = "fail" if any(check["status"] == "fail" for check in checks) else (
-        "unknown" if any(check["status"] == "unknown" for check in checks) else "pass")
-    summary = {"pass": "The inspected routing configuration looks correct; this does not prove service connectivity.",
-               "fail": "A peering or routing issue was found for the selected path.",
-               "unknown": "Some configuration checks could not be completed."}[status]
+        "unknown" if any(check["status"] == "unknown" for check in checks) else
+        "review" if any(check["status"] == "review" for check in checks) else "pass")
+    summary = {"pass": "The inspected AWS configuration allows the selected traffic." if test_type else "The inspected routing configuration looks correct.",
+               "fail": "The inspected configuration has a blocker for this path.",
+               "review": "Routing and firewall rules are shown below. Select a traffic type for a rule-by-rule verdict.",
+               "unknown": "The inspected configuration did not establish whether the path allows this traffic."}[status]
     if all(check["status"] == "not_required" for check in checks):
         summary = "Both instances share a subnet; direct peering and route-table checks are not needed for this path."
     return {"status": status, "summary": summary, "scope": SCOPE, "checks": checks}
+
+
+def configuration_result(session: Any, source: Node, destination: Node, address_type: str,
+                         test_type: str, port: int | None) -> dict[str, Any]:
+    analysis = analyze_network(session, source, destination, address_type, test_type, port)
+    return {
+        "mode": "configuration", "timestamp": datetime.now(timezone.utc).isoformat(),
+        "source_id": source.instance_id, "source_name": source.name,
+        "destination_id": destination.instance_id, "destination_name": destination.name,
+        "address_type": address_type, "tested_address": destination.private_ip,
+        "test_type": test_type, "port": TEST_PORTS.get(test_type, port),
+        "summary": analysis["summary"], "network_analysis": analysis,
+    }
