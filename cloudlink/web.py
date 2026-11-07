@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import time
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,8 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
     def index() -> str:
         if "csrf_token" not in browser_session:
             browser_session["csrf_token"] = secrets.token_urlsafe(32)
+        if "history_owner" not in browser_session:
+            browser_session["history_owner"] = secrets.token_urlsafe(32)
         return render_template("index.html", csrf_token=browser_session["csrf_token"])
 
     @app.get("/healthz")
@@ -76,8 +79,11 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
 
     @app.get("/api/history")
     def history() -> Any:
+        history_owner = browser_session.get("history_owner")
+        if not history_owner:
+            return jsonify({"tests": []})
         try:
-            return jsonify({"tests": store.recent()})
+            return jsonify({"tests": store.recent(history_owner)})
         except Exception:
             app.logger.exception("History unavailable")
             return jsonify({"error": "History is temporarily unavailable."}), 503
@@ -86,9 +92,12 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
     def job_status(job_id: Any) -> Any:
         if job_store is None:
             return jsonify({"error": "Queued jobs are not enabled locally."}), 404
+        history_owner = browser_session.get("history_owner")
+        if not history_owner:
+            return jsonify({"error": "This test was not found or has expired."}), 404
         try:
             job = job_store.get(str(job_id))
-            if job is None:
+            if job is None or job.get("history_partition") != history_owner or int(job["expires_at"]) <= int(time.time()):
                 return jsonify({"error": "This test was not found or has expired."}), 404
             return jsonify(job_store.view(job))
         except Exception:
@@ -98,7 +107,8 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
     @app.post("/api/tests")
     def test_connection() -> Any:
         csrf_token = browser_session.get("csrf_token")
-        if not csrf_token or not secrets.compare_digest(request.headers.get("X-CloudLink-Token", ""), csrf_token):
+        history_owner = browser_session.get("history_owner")
+        if not history_owner or not csrf_token or not secrets.compare_digest(request.headers.get("X-CloudLink-Token", ""), csrf_token):
             return jsonify({"error": "Invalid page token. Refresh and try again."}), 403
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
@@ -136,7 +146,8 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
                 return jsonify({"error": f"The destination has no {address_type} IP address."}), 400
             if job_store is not None:
                 options = {"mode": mode} if mode == "configuration" else {}
-                job = job_store.submit(source, destination, address_type=address_type, test_type=test_type, port=port, **options)
+                job = job_store.submit(source, destination, history_owner=history_owner,
+                                       address_type=address_type, test_type=test_type, port=port, **options)
                 job["status_url"] = f"/api/tests/{job['id']}"
                 return jsonify(job), 202
             if mode == "configuration":
@@ -149,7 +160,7 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
                 )
                 if not result["check"]["ok"]:
                     result["network_analysis"] = analyze_network(session, source, destination, address_type, test_type, port)
-            result["id"] = store.add(result)
+            result["id"] = store.add(result, history_owner)
             return jsonify(result)
         except ValueError as error:
             return jsonify({"error": str(error)}), 400
