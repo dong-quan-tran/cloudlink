@@ -11,72 +11,76 @@
 </head>
 <body>
   <div class="shell">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">↗</span><span>CloudLink</span></div>
-      <div class="side-label">WORKSPACE</div>
-      <div class="nav-item active"><span>◉</span> Connectivity lab</div>
-      <div class="sidebar-bottom">
-        <div class="environment"><span class="live-dot"></span><span>CloudLink lab</span></div>
-        <p>CloudLink · us-east-1<br>Source-to-destination diagnostics</p>
-      </div>
-    </aside>
+    <header class="topbar">
+      <a class="brand" href="#"><span class="brand-mark" aria-hidden="true">↗</span>CloudLink</a>
+      <nav aria-label="Workspace"><a href="#setup-title">Diagnostics</a><a href="#history-title">History</a></nav>
+    </header>
 
     <main class="main">
-      <header class="topbar"><span>Workspace <span class="crumb">/</span> Connectivity lab</span><span class="top-pill">Cloud connectivity lab</span></header>
       <div class="content">
-        <div class="eyebrow">NETWORK DIAGNOSTICS</div>
-        <div class="page-heading">
-          <div><h1>Inspect a connection</h1><p>Check peering and routes alongside a live connection check from the source instance.</p></div>
-          <button class="quiet-button" id="refresh" type="button">↻ &nbsp; Refresh instances</button>
+        <header class="page-heading">
+          <div class="eyebrow">NETWORK DIAGNOSTICS</div>
+          <h1>Inspect a connection</h1>
+          <p>Find out if two instances can communicate and see which network settings shape the path.</p>
+        </header>
+
+        <div class="mode-picker" role="group" aria-label="Diagnostic mode">
+          <button type="button" class="mode-card" data-mode="live" aria-pressed="true">
+            <span class="mode-icon" aria-hidden="true">↗</span>
+            <span><strong>Live connectivity</strong><small>Send traffic from the source. See what may be blocking it if the test fails.</small></span>
+          </button>
+          <button type="button" class="mode-card" data-mode="configuration" aria-pressed="false">
+            <span class="mode-icon" aria-hidden="true">≡</span>
+            <span><strong>Configuration review</strong><small>Inspect peering, routes, security groups, and subnet ACLs without sending traffic.</small></span>
+          </button>
         </div>
 
-        <section class="card test-card" aria-labelledby="setup-title">
-          <div class="card-title-row"><h2 id="setup-title">New connectivity test</h2><span class="step">01 / 02</span></div>
+        <form id="diagnostic-form" class="card test-card" aria-labelledby="setup-title">
+          <div class="card-title-row"><h2 id="setup-title">Choose your instances</h2><button class="quiet-button" id="refresh" type="button">↻ &nbsp; Refresh</button></div>
           <div class="network-path">
             <div class="endpoint">
               <label for="source">SOURCE INSTANCE</label>
               <select id="source" required><option value="">Loading instances…</option></select>
-              <p>CloudLink connects here to run the test.</p>
               <p class="endpoint-meta" id="source-meta"></p>
             </div>
             <div class="connection-line"><span class="line"></span><span class="direction">→</span><span class="line"></span></div>
             <div class="endpoint">
               <label for="destination">DESTINATION INSTANCE</label>
               <select id="destination" required><option value="">Loading instances…</option></select>
-              <p>This instance receives the probe traffic.</p>
               <p class="endpoint-meta" id="destination-meta"></p>
             </div>
           </div>
           <div class="test-options">
-            <div class="option-field"><span class="field-label">DESTINATION ADDRESS</span><div class="fixed-address">Private IP</div></div>
-            <div class="option-field"><label for="test-type">TEST TYPE</label><select id="test-type"><option value="ping">Ping (ICMP)</option><option value="http">HTTP (port 80)</option><option value="https">HTTPS (port 443)</option><option value="ssh">SSH banner (port 22)</option><option value="tcp">Custom TCP port</option></select></div>
+            <div class="option-field"><label for="test-type" id="traffic-label">TEST TYPE</label><select id="test-type" aria-describedby="test-description"><option value="overview" id="overview-option" hidden disabled>Path overview (no port)</option><option value="ping" selected>Ping (ICMP)</option><option value="http">HTTP (port 80)</option><option value="https">HTTPS (port 443)</option><option value="ssh">SSH (port 22)</option><option value="tcp">Custom TCP port</option></select></div>
             <div class="option-field port-option" id="port-option" hidden><label for="tcp-port">TCP PORT</label><input id="tcp-port" type="number" min="1" max="65535" value="8080" inputmode="numeric"></div>
+            <div class="option-field address-field"><span class="field-label">DESTINATION ADDRESS</span><div class="fixed-address">Private IP</div></div>
           </div>
           <p class="test-description" id="test-description">Sends two ICMP echo requests from the source. A failed ping does not prove that other traffic is blocked.</p>
-          <div class="card-footer"><span>Read-only diagnostics. CloudLink does not change network settings.</span><button id="run-test" class="primary-button" type="button" disabled>Run diagnostics <span>→</span></button></div>
-        </section>
+          <div class="card-footer"><span>Read-only diagnostics</span><button id="run-test" class="primary-button" type="submit" disabled>Run live test →</button></div>
+        </form>
 
         <div id="notice" class="notice" role="status" hidden></div>
 
         <section class="card result-card" aria-labelledby="result-title">
-          <div class="card-title-row"><h2 id="result-title">Latest result</h2><span class="step">02 / 02</span></div>
-          <div id="result-empty" class="empty-state"><div class="empty-icon">⌁</div><h3>No test run yet</h3><p>Choose a source and destination above to see the connection status and next steps.</p></div>
+          <div class="card-title-row"><h2 id="result-title">Diagnostic result</h2></div>
+          <div id="result-empty" class="empty-state"><span class="empty-icon" aria-hidden="true">⌁</span><h3>Ready when you are</h3><p>Run a live test or review the network configuration to see findings here.</p></div>
           <div id="result-content" hidden>
             <div class="result-overview"><span id="result-badge" class="result-badge"></span><span id="result-time" class="result-time"></span></div>
             <h3 id="result-summary"></h3><p id="result-route" class="result-route"></p>
-            <div class="metrics single"><div><span class="metric-label">LIVE CONNECTIVITY · <span id="check-label">TEST</span></span><strong id="check-status">—</strong><small id="check-detail"></small></div></div>
+            <div id="live-detail">
+              <div class="metrics"><div><span class="metric-label">LIVE CONNECTIVITY · <span id="check-label">TEST</span></span><strong id="check-status">—</strong><small id="check-detail"></small></div></div>
+              <div class="recommendation"><span class="metric-label">WHAT TO CHECK NEXT</span><p id="result-recommendation"></p></div>
+            </div>
             <section class="network-analysis" id="network-analysis" aria-labelledby="network-title" hidden>
-              <div class="network-heading"><h3 id="network-title">Peering &amp; routing</h3><span id="network-badge" class="network-status unknown"></span></div>
+              <div class="network-heading"><h3 id="network-title">Network configuration</h3><span id="network-badge" class="network-status unknown"></span></div>
               <p class="network-summary" id="network-summary"></p>
               <div class="network-findings" id="network-findings"></div>
               <p class="network-scope" id="network-scope"></p>
             </section>
-            <div class="recommendation"><span class="recommendation-label">WHAT TO CHECK NEXT</span><p id="result-recommendation"></p></div>
           </div>
         </section>
 
-        <section class="history-section" aria-labelledby="history-title"><div class="section-heading"><div><h2 id="history-title">Recent diagnostics</h2><p>Select a completed result to review its saved configuration snapshot.</p></div></div><div id="history" class="history-list"><div class="history-empty">No saved tests yet.</div></div></section>
-        <p class="fine-print">Choose from running CloudLink probe instances. Each check runs from the selected source; CloudLink's management connection is separate from that path.</p>
+        <section class="history-section" aria-labelledby="history-title"><div class="section-heading"><h2 id="history-title">Recent diagnostics</h2><p>Open a completed diagnostic to revisit its findings.</p></div><div id="history" class="history-list"><div class="history-empty">No saved diagnostics yet.</div></div></section>
       </div>
     </main>
   </div>

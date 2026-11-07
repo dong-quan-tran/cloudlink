@@ -2,7 +2,10 @@ const $ = (id) => document.getElementById(id);
 const token = document.querySelector('meta[name="cloudlink-token"]').content;
 let nodes = [];
 let busy = false;
-const testLabels = {ping: 'PING', http: 'HTTP', https: 'HTTPS', ssh: 'SSH', tcp: 'CUSTOM TCP'};
+let mode = 'live';
+const selectedTraffic = {live: 'ping', configuration: 'overview'};
+const modeButtons = document.querySelectorAll('[data-mode]');
+const testLabels = {overview: 'Path overview', ping: 'Ping', http: 'HTTP', https: 'HTTPS', ssh: 'SSH', tcp: 'Custom TCP'};
 const testDescriptions = {
   ping: 'Sends two ICMP echo requests from the source. A failed ping does not prove that other traffic is blocked.',
   http: 'Requests / over HTTP from the source. Any HTTP status means the service responded.',
@@ -34,6 +37,8 @@ function updateButton() {
   const port = Number($('tcp-port').value);
   const portValid = testType !== 'tcp' || ($('tcp-port').value !== '' && Number.isInteger(port) && port >= 1 && port <= 65535);
   $('run-test').disabled = busy || !($('source').value && $('destination').value && $('source').value !== $('destination').value && portValid);
+  if (!busy) $('run-test').textContent = mode === 'live' ? 'Run live test →' : 'Review configuration →';
+  modeButtons.forEach((button) => { button.disabled = busy; });
   ['source', 'destination'].forEach((side) => {
     const node = nodes.find((item) => item.instance_id === $(side).value);
     $(`${side}-meta`).textContent = node ? [node.vpc_id, node.subnet_id].filter(Boolean).join(' · ') : '';
@@ -42,9 +47,24 @@ function updateButton() {
 
 function updateTestType() {
   const testType = $('test-type').value;
+  selectedTraffic[mode] = testType;
   $('port-option').hidden = testType !== 'tcp';
-  $('test-description').textContent = testDescriptions[testType];
+  $('tcp-port').disabled = testType !== 'tcp';
+  $('test-description').textContent = mode === 'live' ? testDescriptions[testType] : testType === 'overview'
+    ? 'See the routes and firewall rules between these instances. No port is needed.'
+    : 'Check whether AWS rules allow this traffic and its reply. No probe is sent.';
   updateButton();
+}
+
+function selectMode(nextMode) {
+  mode = nextMode;
+  const live = mode === 'live';
+  modeButtons.forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.mode === mode)));
+  $('overview-option').hidden = live;
+  $('overview-option').disabled = live;
+  $('traffic-label').textContent = live ? 'TEST TYPE' : 'TRAFFIC TO REVIEW';
+  $('test-type').value = selectedTraffic[mode];
+  updateTestType();
 }
 
 async function loadNodes() {
@@ -75,30 +95,33 @@ function shortTime(timestamp) {
 function showResult(result) {
   $('result-empty').hidden = true;
   $('result-content').hidden = false;
+  const configuration = result.mode === 'configuration';
   const healthy = result.check?.ok === true;
-  $('result-badge').className = `result-badge${healthy ? '' : ' warn'}`;
-  $('result-badge').textContent = healthy ? '● LIVE CHECK SUCCEEDED' : '● LIVE CHECK NEEDS ATTENTION';
+  const status = configuration ? result.network_analysis?.status || 'unknown' : healthy ? 'pass' : 'fail';
+  $('result-badge').className = `result-badge ${status}`;
+  $('result-badge').textContent = configuration ? 'Configuration only · no probe sent' : healthy ? 'Live test succeeded' : 'Live test needs attention';
   $('result-time').textContent = shortTime(result.timestamp);
   $('result-summary').textContent = result.summary;
   const portLabel = result.port ? ` · port ${result.port}` : '';
-  $('result-route').textContent = `${result.source_name} → ${result.destination_name} · ${result.address_type} ${result.tested_address} · ${testLabels[result.test_type] || result.test_type}${portLabel}`;
+  $('result-route').textContent = `${result.source_name} → ${result.destination_name} · ${result.address_type} ${result.tested_address} · ${testLabels[result.test_type] || 'Connectivity'}${portLabel}`;
+  $('live-detail').hidden = configuration;
   $('check-label').textContent = testLabels[result.test_type] || 'TEST';
   $('check-status').textContent = result.check?.management_error ? 'Could not start' : result.check?.incomplete ? 'Incomplete' : healthy ? 'Successful' : 'Failed';
   $('check-detail').textContent = result.check?.detail || 'No test detail returned';
   const issue = result.network_analysis?.checks?.find((check) => check.status === 'fail');
-  $('result-recommendation').textContent = issue && !healthy
-    ? (result.check?.management_error ? `${result.recommendation} Separately, ${issue.label}: ${issue.detail}` : `${issue.label}: ${issue.detail}`)
-    : result.recommendation;
+  $('result-recommendation').textContent = issue && !healthy && !result.check?.management_error && !result.check?.incomplete
+    ? `${issue.label}: ${issue.detail}` : result.recommendation || '';
   showNetwork(result.network_analysis, healthy);
 }
 
 function showNetwork(analysis, liveSucceeded) {
-  const labels = {pass: 'Looks correct', fail: 'Issue found', unknown: 'Couldn’t assess', not_required: 'Not needed'};
-  $('network-analysis').hidden = false;
+  const labels = {pass: 'Allowed', fail: 'Issue found', unknown: 'Inconclusive', not_required: 'Not needed', review: 'Rules listed'};
+  $('network-analysis').hidden = !analysis && liveSucceeded;
+  if ($('network-analysis').hidden) return;
   const status = Object.hasOwn(labels, analysis?.status) ? analysis.status : 'unknown';
   $('network-badge').className = `network-status ${status}`;
   $('network-badge').textContent = analysis ? labels[status] : 'No saved snapshot';
-  $('network-summary').textContent = analysis?.summary || 'This older result has no saved routing information. Run a new diagnostic to inspect the configuration.';
+  $('network-summary').textContent = analysis?.summary || 'Run a configuration review to inspect the current network settings.';
   if (liveSucceeded && status === 'fail') {
     $('network-summary').textContent += ' The live check succeeded, so these findings may reflect a changed or unmodeled path. Review the evidence before changing anything.';
   }
@@ -115,17 +138,27 @@ function showNetwork(analysis, liveSucceeded) {
     const evidence = document.createElement('dl'); evidence.className = 'network-evidence';
     const rows = check.key === 'peering'
       ? [['Source VPC', check.source_vpc], ['Dest. VPC', check.destination_vpc], ['Connection', check.connections?.map((peer) => `${peer.id} (${peer.state})`).join(', ')]]
-      : [['Table', check.table_id], ['Association', check.association], ['Destination', check.destination_ip], ['Match', check.cidr], ['Target', check.target], ['State', check.route_state]];
+      : [['Table', check.table_id], ['Association', check.association], ['Destination', check.destination_ip], ['Match', check.cidr], ['Target', check.target], ['State', check.route_state], ['Resources', check.resources?.join(', ')]];
     rows.forEach(([label, value]) => {
       if (!value) return;
       const term = document.createElement('dt'); term.textContent = label;
       const description = document.createElement('dd'); description.textContent = value;
       evidence.append(term, description);
     });
-    card.append(heading, detail, evidence); list.append(card);
+    card.append(heading, detail);
+    if (evidence.childElementCount) card.append(evidence);
+    if (check.rules?.length) {
+      const rules = document.createElement('details'); rules.className = 'rule-details';
+      const caption = document.createElement('summary'); caption.textContent = `Rule evidence (${check.rules.length})`;
+      const entries = document.createElement('ul');
+      check.rules.forEach((rule) => {
+        const entry = document.createElement('li'); entry.textContent = rule; entries.append(entry);
+      });
+      rules.append(caption, entries); card.append(rules);
+    }
+    list.append(card);
   });
-  $('network-scope').textContent = analysis?.scope
-    ? `${analysis.scope} These findings describe the selected source-to-destination path, not CloudLink’s management SSH connection.` : '';
+  $('network-scope').textContent = analysis?.scope || '';
 }
 
 async function loadHistory() {
@@ -138,42 +171,45 @@ async function loadHistory() {
     if (!data.tests.length) {
       const empty = document.createElement('div');
       empty.className = 'history-empty';
-      empty.textContent = 'No saved tests yet.';
+      empty.textContent = 'No saved diagnostics yet.';
       list.append(empty);
       return;
     }
     data.tests.forEach((test) => {
       const row = document.createElement('button'); row.type = 'button'; row.className = 'history-row';
-      row.disabled = !test.check;
+      row.disabled = !test.check && !(test.mode === 'configuration' && test.network_analysis);
       row.addEventListener('click', () => {
         showResult(test);
         $('result-title').scrollIntoView({behavior: 'smooth', block: 'start'});
       });
       const info = document.createElement('div');
       const title = document.createElement('strong'); title.textContent = `${test.source_name} → ${test.destination_name}`;
-      const time = document.createElement('small'); time.textContent = `${shortTime(test.timestamp)} · ${testLabels[test.test_type] || 'LEGACY TEST'} · ${test.address_type} IP`;
-      const succeeded = test.check?.ok ?? (test.summary === 'Connected');
-      const state = document.createElement('span'); state.className = `history-state${succeeded ? '' : ' warn'}`; state.textContent = test.summary;
+      const time = document.createElement('small'); time.textContent = `${shortTime(test.timestamp)} · ${test.mode === 'configuration' ? 'Configuration' : 'Live test'} · ${testLabels[test.test_type] || 'Connectivity'}`;
+      const status = test.network_analysis?.status && test.mode === 'configuration' ? test.network_analysis.status
+        : test.check ? (test.check.ok ? 'pass' : 'fail') : 'review';
+      const state = document.createElement('span'); state.className = `history-state ${status}`; state.textContent = test.summary;
       info.append(title, time); row.append(info, state); list.append(row);
     });
   } catch (error) { showNotice(error.message); }
 }
 
-async function runTest() {
+async function runTest(event) {
+  event.preventDefault();
+  if ($('run-test').disabled) return;
   if (sessionStorage.getItem('cloudlink.pendingJob')) {
     await resumeJob();
     return;
   }
   const button = $('run-test');
   busy = true;
-  button.disabled = true;
+  updateButton();
   button.textContent = 'Running diagnostics…';
   showNotice('');
   try {
     const response = await fetch('/api/tests', {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-CloudLink-Token': token},
-      body: JSON.stringify({source_id: $('source').value, destination_id: $('destination').value, address_type: 'private', test_type: $('test-type').value, ...($('test-type').value === 'tcp' ? {port: Number($('tcp-port').value)} : {})}),
+      body: JSON.stringify({mode, source_id: $('source').value, destination_id: $('destination').value, address_type: 'private', test_type: $('test-type').value, ...($('test-type').value === 'tcp' ? {port: Number($('tcp-port').value)} : {})}),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Test failed.');
@@ -186,7 +222,7 @@ async function runTest() {
     }
     await loadHistory();
   } catch (error) { showNotice(error.message); }
-  finally { busy = false; button.innerHTML = 'Run diagnostics <span>→</span>'; updateButton(); }
+  finally { busy = false; updateButton(); }
 }
 
 async function followJob(id) {
@@ -224,7 +260,6 @@ async function resumeJob() {
   catch (error) { showNotice(error.message); }
   finally {
     busy = false;
-    $('run-test').innerHTML = 'Run diagnostics <span>→</span>';
     updateButton();
     await loadHistory();
   }
@@ -235,7 +270,8 @@ $('destination').addEventListener('change', updateButton);
 $('tcp-port').addEventListener('input', updateButton);
 $('test-type').addEventListener('change', updateTestType);
 $('refresh').addEventListener('click', loadNodes);
-$('run-test').addEventListener('click', runTest);
+$('diagnostic-form').addEventListener('submit', runTest);
+modeButtons.forEach((button) => button.addEventListener('click', () => selectMode(button.dataset.mode)));
 updateTestType();
 loadNodes();
 loadHistory();
