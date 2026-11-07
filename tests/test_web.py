@@ -72,7 +72,8 @@ class WebTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["summary"], "HTTPS responded")
-        self.assertEqual(response.json["network_analysis"]["status"], "unknown")
+        self.assertNotIn("network_analysis", response.json)
+        self.analysis.assert_not_called()
         self.assertEqual(probe.call_args.kwargs["test_type"], "https")
         self.assertIsNone(probe.call_args.kwargs["port"])
         self.assertEqual(len(self.client.get("/api/history").json["tests"]), 1)
@@ -83,11 +84,25 @@ class WebTests(unittest.TestCase):
         token = html.split('name="cloudlink-token" content="')[1].split('"')[0]
         headers = {"X-CloudLink-Token": token}
         base = {"source_id": "i-a", "destination_id": "i-b"}
-        for extra in ({"test_type": "udp"}, {"test_type": "tcp", "port": 0},
+        for extra in ({"mode": "invalid"}, {"test_type": "overview"}, {"test_type": "udp"}, {"test_type": "tcp", "port": 0},
                       {"test_type": "tcp", "port": True}, {"test_type": "ping", "port": 8080}):
             with self.subTest(extra=extra):
                 response = self.client.post("/api/tests", json={**base, **extra}, headers=headers)
                 self.assertEqual(response.status_code, 400)
+
+    @patch("cloudlink.network.analyze_network", return_value={"status": "review", "summary": "Rules listed", "checks": []})
+    @patch("cloudlink.web.run_probe")
+    @patch("cloudlink.web.discover_nodes", return_value=NODES)
+    def test_configuration_review_saves_without_running_a_probe(self, _discover, probe, analyze):
+        html = self.client.get("/").get_data(as_text=True)
+        token = html.split('name="cloudlink-token" content="')[1].split('"')[0]
+        response = self.client.post("/api/tests", json={"source_id": "i-a", "destination_id": "i-b", "mode": "configuration"},
+                                    headers={"X-CloudLink-Token": token})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["test_type"], "overview")
+        probe.assert_not_called()
+        analyze.assert_called_once()
+        self.assertEqual(self.client.get("/api/history").json["tests"][0], response.json)
 
     def test_hosted_inventory_needs_no_aws_session(self):
         inventory = Path(self.temp.name) / "nodes.json"
@@ -135,7 +150,7 @@ class WebTests(unittest.TestCase):
         probe.assert_not_called()
 
     @patch("cloudlink.worker.analyze_network", return_value={"status": "pass", "checks": []})
-    @patch("cloudlink.worker.run_probe", return_value={"check": {"ok": True}})
+    @patch("cloudlink.worker.run_probe", return_value={"check": {"ok": False}})
     @patch("cloudlink.worker.discover_nodes", return_value=NODES)
     def test_worker_saves_before_acknowledging(self, _discover, probe, analysis):
         store = MagicMock()
@@ -148,6 +163,7 @@ class WebTests(unittest.TestCase):
             process_message(store, FakeSession(), {"Body": json.dumps({"id": "job-1"}), "ReceiptHandle": "receipt"})
         store.complete.assert_called_once_with("job-1", store.claim.call_args.args[1], probe.return_value)
         self.assertEqual(store.complete.call_args.args[2]["network_analysis"], analysis.return_value)
+        self.assertEqual(analysis.call_args.kwargs["port"], 8080)
         self.assertIs(type(probe.call_args.kwargs["port"]), int)
         self.assertEqual(probe.call_args.kwargs["port"], 8080)
         names = [call[0] for call in store.mock_calls]

@@ -12,7 +12,7 @@ from flask import Flask, jsonify, render_template, request, session as browser_s
 
 from .history import HistoryStore
 from .jobs import JobStore
-from .network import analyze_network
+from .network import analyze_network, configuration_result
 from .probe import TEST_TYPES, discover_nodes, load_inventory, run_probe
 
 
@@ -105,14 +105,20 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
             return jsonify({"error": "Expected a JSON request."}), 400
         source_id = payload.get("source_id")
         destination_id = payload.get("destination_id")
+        mode = payload.get("mode", "live")
         address_type = payload.get("address_type", "private")
-        test_type = payload.get("test_type", "ping")
+        test_type = payload.get("test_type", "overview" if mode == "configuration" else "ping")
         port = payload.get("port")
         if not isinstance(source_id, str) or not isinstance(destination_id, str):
             return jsonify({"error": "Choose a source and destination."}), 400
         if address_type not in ("private", "public"):
             return jsonify({"error": "Choose a private or public destination address."}), 400
-        if not isinstance(test_type, str) or test_type not in TEST_TYPES:
+        if mode not in ("live", "configuration"):
+            return jsonify({"error": "Choose a live test or configuration review."}), 400
+        if mode == "configuration" and address_type != "private":
+            return jsonify({"error": "Configuration review supports private IPv4 addresses."}), 400
+        valid_types = TEST_TYPES | {"overview"} if mode == "configuration" else TEST_TYPES
+        if not isinstance(test_type, str) or test_type not in valid_types:
             return jsonify({"error": "Choose ping, HTTP, HTTPS, SSH, or a custom TCP port."}), 400
         if test_type == "tcp" and (type(port) is not int or not 1 <= port <= 65535):
             return jsonify({"error": "Custom TCP port must be between 1 and 65535."}), 400
@@ -129,26 +135,26 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
             if not (destination.private_ip if address_type == "private" else destination.public_ip):
                 return jsonify({"error": f"The destination has no {address_type} IP address."}), 400
             if job_store is not None:
-                job = job_store.submit(source, destination, address_type=address_type, test_type=test_type, port=port)
+                options = {"mode": mode} if mode == "configuration" else {}
+                job = job_store.submit(source, destination, address_type=address_type, test_type=test_type, port=port, **options)
                 job["status_url"] = f"/api/tests/{job['id']}"
                 return jsonify(job), 202
-            result = run_probe(
-                session,
-                source,
-                destination,
-                address_type=address_type,
-                existing_key_path=os.getenv("CLOUDLINK_KEY_PATH"),
-                source_address_type=os.getenv("CLOUDLINK_SOURCE_ADDRESS", "public"),
-                test_type=test_type,
-                port=port,
-            )
-            result["network_analysis"] = analyze_network(session, source, destination, address_type)
+            if mode == "configuration":
+                result = configuration_result(session, source, destination, address_type, test_type, port)
+            else:
+                result = run_probe(
+                    session, source, destination, address_type=address_type, test_type=test_type, port=port,
+                    existing_key_path=os.getenv("CLOUDLINK_KEY_PATH"),
+                    source_address_type=os.getenv("CLOUDLINK_SOURCE_ADDRESS", "public"),
+                )
+                if not result["check"]["ok"]:
+                    result["network_analysis"] = analyze_network(session, source, destination, address_type, test_type, port)
             result["id"] = store.add(result)
             return jsonify(result)
         except ValueError as error:
             return jsonify({"error": str(error)}), 400
         except Exception as error:
             app.logger.exception("Connection test failed")
-            return jsonify({"error": f"Test could not start: {type(error).__name__}. Check inventory and source SSH."}), 503
+            return jsonify({"error": "The diagnostic could not complete. Check AWS access or try again."}), 503
 
     return app

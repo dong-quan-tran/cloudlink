@@ -11,7 +11,7 @@ import uuid
 from typing import Any
 
 from .jobs import JobStore, TERMINAL
-from .network import analyze_network
+from .network import analyze_network, configuration_result
 from .probe import discover_nodes, run_probe
 
 logger = logging.getLogger(__name__)
@@ -43,13 +43,18 @@ def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> N
             acknowledge()
             return
         request = dict(job["request"])
+        mode = request.pop("mode", "live")
         if request.get("port") is not None:
             request["port"] = int(request["port"])  # DynamoDB returns numbers as Decimal.
-        result = run_probe(
-            session, source, destination, **request,
-            existing_key_path=os.environ["CLOUDLINK_KEY_PATH"], source_address_type="private",
-        )
-        result["network_analysis"] = analyze_network(session, source, destination, request["address_type"])
+        if mode == "configuration":
+            result = configuration_result(session, source, destination, **request)
+        else:
+            result = run_probe(
+                session, source, destination, **request,
+                existing_key_path=os.environ["CLOUDLINK_KEY_PATH"], source_address_type="private",
+            )
+            if not result["check"]["ok"]:
+                result["network_analysis"] = analyze_network(session, source, destination, **request)
         if store.complete(job_id, owner, result):
             acknowledge()
     except Exception:
