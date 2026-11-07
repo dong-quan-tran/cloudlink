@@ -12,12 +12,12 @@
 <body>
   <div class="shell">
     <header class="topbar">
-      <a class="brand" href="#"><span class="brand-mark" aria-hidden="true">↗</span>CloudLink</a>
-      <nav aria-label="Workspace"><a href="#setup-title">Diagnostics</a><a href="#history-title">History</a></nav>
+      <a class="brand" href="#diagnostics"><span class="brand-mark" aria-hidden="true">↗</span>CloudLink</a>
+      <nav aria-label="Workspace"><a id="diagnostics-link" href="#diagnostics" aria-current="page">Diagnostics</a><a id="history-link" href="#history">History</a></nav>
     </header>
 
     <main class="main">
-      <div class="content">
+      <div class="content" id="diagnostics-view">
         <header class="page-heading">
           <div class="eyebrow">NETWORK DIAGNOSTICS</div>
           <h1>Inspect a connection</h1>
@@ -62,27 +62,35 @@
         <div id="notice" class="notice" role="status" hidden></div>
 
         <section class="card result-card" aria-labelledby="result-title">
-          <div class="card-title-row"><h2 id="result-title">Diagnostic result</h2></div>
-          <div id="result-empty" class="empty-state"><span class="empty-icon" aria-hidden="true">⌁</span><h3>Ready when you are</h3><p>Run a live test or review the network configuration to see findings here.</p></div>
-          <div id="result-content" hidden>
-            <div class="result-overview"><span id="result-badge" class="result-badge"></span><span id="result-time" class="result-time"></span></div>
-            <h3 id="result-summary"></h3><p id="result-route" class="result-route"></p>
-            <div id="live-detail">
-              <div class="metrics"><div><span class="metric-label">LIVE CONNECTIVITY · <span id="check-label">TEST</span></span><strong id="check-status">—</strong><small id="check-detail"></small></div></div>
-              <div class="recommendation"><span class="metric-label">WHAT TO CHECK NEXT</span><p id="result-recommendation"></p></div>
-            </div>
-            <section class="network-analysis" id="network-analysis" aria-labelledby="network-title" hidden>
-              <div class="network-heading"><h3 id="network-title">Network configuration</h3><span id="network-badge" class="network-status unknown"></span></div>
-              <p class="network-summary" id="network-summary"></p>
-              <div class="network-findings" id="network-findings"></div>
-              <p class="network-scope" id="network-scope"></p>
-            </section>
-          </div>
+          <div class="card-title-row"><h2 id="result-title">Latest live test</h2></div>
+          <div id="result-empty" class="empty-state"><span class="empty-icon" aria-hidden="true">⌁</span><h3>No live test yet</h3><p>Run a test to see the result here.</p></div>
+          <div id="result-content" hidden></div>
         </section>
-
-        <section class="history-section" aria-labelledby="history-title"><div class="section-heading"><h2 id="history-title">Recent diagnostics</h2><p>Open a completed diagnostic to revisit its findings.</p></div><div id="history" class="history-list"><div class="history-empty">No saved diagnostics yet.</div></div></section>
       </div>
+      <section class="content" id="history-view" aria-labelledby="history-title" hidden>
+        <header class="page-heading"><div class="eyebrow">NETWORK DIAGNOSTICS</div><h1 id="history-title">History</h1><p>Open a saved live test or configuration review.</p></header>
+        <div id="history-list" class="history-list"><div class="history-empty">Loading history…</div></div>
+      </section>
     </main>
   </div>
+  <dialog id="saved-result" class="card saved-result" aria-labelledby="saved-result-title">
+    <div class="card-title-row"><h2 id="saved-result-title">Saved diagnostic</h2><form method="dialog"><button class="quiet-button" autofocus>Close</button></form></div>
+    <div id="saved-result-content"></div>
+  </dialog>
+
+  <template id="result-template">
+    <div class="result-overview"><span data-result="badge" class="result-badge"></span><span data-result="time" class="result-time"></span></div>
+    <h3 class="result-summary" data-result="summary"></h3><p class="result-route" data-result="route"></p>
+    <div data-result="live">
+      <div class="metrics"><div><span class="metric-label">LIVE CONNECTIVITY · <span data-result="check-label">TEST</span></span><strong data-result="check-status">—</strong><small data-result="check-detail"></small></div></div>
+      <div class="recommendation"><span class="metric-label">WHAT TO CHECK NEXT</span><p data-result="recommendation"></p></div>
+    </div>
+    <section class="network-analysis" data-result="network" aria-label="Network configuration" hidden>
+      <div class="network-heading"><h3>Network configuration</h3><span data-result="network-badge" class="network-status unknown"></span></div>
+      <p class="network-summary" data-result="network-summary"></p>
+      <div class="network-findings" data-result="network-findings"></div>
+      <p class="network-scope" data-result="network-scope"></p>
+    </section>
+  </template>
 </body>
 </html>

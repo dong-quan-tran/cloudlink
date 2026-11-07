@@ -38,7 +38,7 @@ class WebTests(unittest.TestCase):
     def test_lab_form_uses_private_addresses_only(self):
         html = self.client.get("/").get_data(as_text=True)
         self.assertIn('class="fixed-address">Private IP</div>', html)
-        self.assertIn('id="network-findings"', html)
+        self.assertIn('data-result="network-findings"', html)
         self.assertNotIn('id="address-type"', html)
         self.assertNotIn('<option value="public">', html)
 

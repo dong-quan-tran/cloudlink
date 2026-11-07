@@ -3,6 +3,7 @@ const token = document.querySelector('meta[name="cloudlink-token"]').content;
 let nodes = [];
 let busy = false;
 let mode = 'live';
+const latestResults = {};
 const selectedTraffic = {live: 'ping', configuration: 'overview'};
 const modeButtons = document.querySelectorAll('[data-mode]');
 const testLabels = {overview: 'Path overview', ping: 'Ping', http: 'HTTP', https: 'HTTPS', ssh: 'SSH', tcp: 'Custom TCP'};
@@ -41,7 +42,7 @@ function updateButton() {
   modeButtons.forEach((button) => { button.disabled = busy; });
   ['source', 'destination'].forEach((side) => {
     const node = nodes.find((item) => item.instance_id === $(side).value);
-    $(`${side}-meta`).textContent = node ? [node.vpc_id, node.subnet_id].filter(Boolean).join(' · ') : '';
+    $(`${side}-meta`).textContent = node?.availability_zone || '';
   });
 }
 
@@ -65,6 +66,19 @@ function selectMode(nextMode) {
   $('traffic-label').textContent = live ? 'TEST TYPE' : 'TRAFFIC TO REVIEW';
   $('test-type').value = selectedTraffic[mode];
   updateTestType();
+  renderLatestResult();
+}
+
+function showPage() {
+  const history = location.hash === '#history';
+  $('diagnostics-view').hidden = history;
+  $('history-view').hidden = !history;
+  $('diagnostics-link').removeAttribute('aria-current');
+  $('history-link').removeAttribute('aria-current');
+  $(history ? 'history-link' : 'diagnostics-link').setAttribute('aria-current', 'page');
+  if (!history && $('saved-result').open) $('saved-result').close();
+  window.scrollTo(0, 0);
+  if (history) loadHistory();
 }
 
 async function loadNodes() {
@@ -92,41 +106,72 @@ function shortTime(timestamp) {
   return new Date(timestamp).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'});
 }
 
-function showResult(result) {
-  $('result-empty').hidden = true;
-  $('result-content').hidden = false;
+function renderLatestResult() {
+  const result = latestResults[mode];
+  const configuration = mode === 'configuration';
+  $('result-title').textContent = configuration ? 'Latest configuration review' : 'Latest live test';
+  $('result-empty').querySelector('h3').textContent = configuration ? 'No configuration review yet' : 'No live test yet';
+  $('result-empty').querySelector('p').textContent = configuration ? 'Review the network settings to see findings here.' : 'Run a test to see the result here.';
+  $('result-empty').hidden = Boolean(result);
+  $('result-content').hidden = !result;
+  if (result) renderResult($('result-content'), result);
+  else $('result-content').replaceChildren();
+}
+
+function saveLatestResult(result) {
+  latestResults[result.mode === 'configuration' ? 'configuration' : 'live'] = result;
+  renderLatestResult();
+}
+
+function renderResult(container, result) {
+  const view = $('result-template').content.cloneNode(true);
+  const field = (name) => view.querySelector(`[data-result="${name}"]`);
   const configuration = result.mode === 'configuration';
   const healthy = result.check?.ok === true;
   const status = configuration ? result.network_analysis?.status || 'unknown' : healthy ? 'pass' : 'fail';
-  $('result-badge').className = `result-badge ${status}`;
-  $('result-badge').textContent = configuration ? 'Configuration only · no probe sent' : healthy ? 'Live test succeeded' : 'Live test needs attention';
-  $('result-time').textContent = shortTime(result.timestamp);
-  $('result-summary').textContent = result.summary;
+  field('badge').className = `result-badge ${status}`;
+  field('badge').textContent = configuration ? 'Configuration only · no probe sent' : healthy ? 'Live test succeeded' : 'Live test needs attention';
+  field('time').textContent = shortTime(result.timestamp);
+  field('summary').textContent = result.summary;
   const portLabel = result.port ? ` · port ${result.port}` : '';
-  $('result-route').textContent = `${result.source_name} → ${result.destination_name} · ${result.address_type} ${result.tested_address} · ${testLabels[result.test_type] || 'Connectivity'}${portLabel}`;
-  $('live-detail').hidden = configuration;
-  $('check-label').textContent = testLabels[result.test_type] || 'TEST';
-  $('check-status').textContent = result.check?.management_error ? 'Could not start' : result.check?.incomplete ? 'Incomplete' : healthy ? 'Successful' : 'Failed';
-  $('check-detail').textContent = result.check?.detail || 'No test detail returned';
+  field('route').textContent = `${result.source_name} → ${result.destination_name} · ${result.address_type} ${result.tested_address} · ${testLabels[result.test_type] || 'Connectivity'}${portLabel}`;
+  field('live').hidden = configuration;
+  field('check-label').textContent = testLabels[result.test_type] || 'TEST';
+  field('check-status').textContent = result.check?.management_error ? 'Could not start' : result.check?.incomplete ? 'Incomplete' : healthy ? 'Successful' : 'Failed';
+  field('check-detail').textContent = result.check?.detail || 'No test detail returned';
   const issue = result.network_analysis?.checks?.find((check) => check.status === 'fail');
-  $('result-recommendation').textContent = issue && !healthy && !result.check?.management_error && !result.check?.incomplete
+  field('recommendation').textContent = issue && !healthy && !result.check?.management_error && !result.check?.incomplete
     ? `${issue.label}: ${issue.detail}` : result.recommendation || '';
-  showNetwork(result.network_analysis, healthy);
+  showNetwork(field, result.network_analysis, healthy);
+  container.replaceChildren(view);
 }
 
-function showNetwork(analysis, liveSucceeded) {
+function evidenceList(rows) {
+  const evidence = document.createElement('dl');
+  evidence.className = 'network-evidence';
+  rows.forEach(([label, value]) => {
+    if (!value) return;
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const description = document.createElement('dd');
+    description.textContent = value;
+    evidence.append(term, description);
+  });
+  return evidence;
+}
+
+function showNetwork(field, analysis, liveSucceeded) {
   const labels = {pass: 'Allowed', fail: 'Issue found', unknown: 'Inconclusive', not_required: 'Not needed', review: 'Rules listed'};
-  $('network-analysis').hidden = !analysis && liveSucceeded;
-  if ($('network-analysis').hidden) return;
+  field('network').hidden = !analysis && liveSucceeded;
+  if (field('network').hidden) return;
   const status = Object.hasOwn(labels, analysis?.status) ? analysis.status : 'unknown';
-  $('network-badge').className = `network-status ${status}`;
-  $('network-badge').textContent = analysis ? labels[status] : 'No saved snapshot';
-  $('network-summary').textContent = analysis?.summary || 'Run a configuration review to inspect the current network settings.';
+  field('network-badge').className = `network-status ${status}`;
+  field('network-badge').textContent = analysis ? labels[status] : 'No saved snapshot';
+  field('network-summary').textContent = analysis?.summary || 'Run a configuration review to inspect the current network settings.';
   if (liveSucceeded && status === 'fail') {
-    $('network-summary').textContent += ' The live check succeeded, so these findings may reflect a changed or unmodeled path. Review the evidence before changing anything.';
+    field('network-summary').textContent += ' The live check succeeded, so these findings may reflect a changed or unmodeled path. Review the evidence before changing anything.';
   }
-  const list = $('network-findings');
-  list.replaceChildren();
+  const list = field('network-findings');
   (analysis?.checks || []).forEach((check) => {
     const card = document.createElement('article'); card.className = 'network-finding';
     const heading = document.createElement('div'); heading.className = 'network-finding-heading';
@@ -135,30 +180,45 @@ function showNetwork(analysis, liveSucceeded) {
     const badge = document.createElement('span'); badge.className = `network-status ${state}`; badge.textContent = labels[state];
     heading.append(title, badge);
     const detail = document.createElement('p'); detail.textContent = check.detail;
-    const evidence = document.createElement('dl'); evidence.className = 'network-evidence';
-    const rows = check.key === 'peering'
-      ? [['Source VPC', check.source_vpc], ['Dest. VPC', check.destination_vpc], ['Connection', check.connections?.map((peer) => `${peer.id} (${peer.state})`).join(', ')]]
-      : [['Table', check.table_id], ['Association', check.association], ['Destination', check.destination_ip], ['Match', check.cidr], ['Target', check.target], ['State', check.route_state], ['Resources', check.resources?.join(', ')]];
-    rows.forEach(([label, value]) => {
-      if (!value) return;
-      const term = document.createElement('dt'); term.textContent = label;
-      const description = document.createElement('dd'); description.textContent = value;
-      evidence.append(term, description);
-    });
+    const evidence = evidenceList([
+      ['Connection', check.connections?.map((peer) => `${peer.name || 'VPC peering connection'} (${peer.state})`).join(', ')],
+      ['Table', check.table_name || (check.table_id ? 'Route table' : '')],
+      ['Association', check.association],
+      ['Destination', check.destination_ip],
+      ['Match', check.cidr],
+      ['Target', check.target_name || (check.target ? (check.target === 'local' ? 'Local VPC' : 'Route target') : '')],
+      ['State', check.route_state],
+      ['Resource', check.resource_names?.join(', ')],
+    ]);
+    const identifiers = evidenceList([
+      ['Source VPC ID', check.source_vpc], ['Destination VPC ID', check.destination_vpc],
+      ['Peering IDs', check.connections?.map((peer) => peer.id).join(', ')],
+      ['Route table ID', check.table_id], ['Subnet ID', check.subnet_id],
+      ['Target ID', check.target !== 'local' && check.target],
+      ['Resource IDs', check.resources?.join(', ')],
+    ]);
     card.append(heading, detail);
     if (evidence.childElementCount) card.append(evidence);
-    if (check.rules?.length) {
-      const rules = document.createElement('details'); rules.className = 'rule-details';
-      const caption = document.createElement('summary'); caption.textContent = `Rule evidence (${check.rules.length})`;
-      const entries = document.createElement('ul');
-      check.rules.forEach((rule) => {
-        const entry = document.createElement('li'); entry.textContent = rule; entries.append(entry);
-      });
-      rules.append(caption, entries); card.append(rules);
+    if (identifiers.childElementCount || check.rules?.length) {
+      const details = document.createElement('details');
+      details.className = 'rule-details';
+      const caption = document.createElement('summary');
+      caption.textContent = check.rules?.length ? 'Rules and resource IDs' : 'Resource IDs';
+      details.append(caption, identifiers);
+      if (check.rules?.length) {
+        const entries = document.createElement('ul');
+        check.rules.forEach((rule) => {
+          const entry = document.createElement('li');
+          entry.textContent = rule;
+          entries.append(entry);
+        });
+        details.append(entries);
+      }
+      card.append(details);
     }
     list.append(card);
   });
-  $('network-scope').textContent = analysis?.scope || '';
+  field('network-scope').textContent = analysis?.scope || '';
 }
 
 async function loadHistory() {
@@ -166,7 +226,7 @@ async function loadHistory() {
     const response = await fetch('/api/history');
     if (!response.ok) throw new Error('History unavailable');
     const data = await response.json();
-    const list = $('history');
+    const list = $('history-list');
     list.replaceChildren();
     if (!data.tests.length) {
       const empty = document.createElement('div');
@@ -179,8 +239,10 @@ async function loadHistory() {
       const row = document.createElement('button'); row.type = 'button'; row.className = 'history-row';
       row.disabled = !test.check && !(test.mode === 'configuration' && test.network_analysis);
       row.addEventListener('click', () => {
-        showResult(test);
-        $('result-title').scrollIntoView({behavior: 'smooth', block: 'start'});
+        $('saved-result-title').textContent = test.mode === 'configuration' ? 'Saved configuration review' : 'Saved live test';
+        renderResult($('saved-result-content'), test);
+        $('saved-result').showModal();
+        $('saved-result').scrollTop = 0;
       });
       const info = document.createElement('div');
       const title = document.createElement('strong'); title.textContent = `${test.source_name} → ${test.destination_name}`;
@@ -190,7 +252,12 @@ async function loadHistory() {
       const state = document.createElement('span'); state.className = `history-state ${status}`; state.textContent = test.summary;
       info.append(title, time); row.append(info, state); list.append(row);
     });
-  } catch (error) { showNotice(error.message); }
+  } catch {
+    const message = document.createElement('div');
+    message.className = 'history-empty';
+    message.textContent = 'History is temporarily unavailable. Try opening History again.';
+    $('history-list').replaceChildren(message);
+  }
 }
 
 async function runTest(event) {
@@ -218,7 +285,7 @@ async function runTest(event) {
       await loadHistory();
       await followJob(data.id);
     } else {
-      showResult(data);
+      saveLatestResult(data);
     }
     await loadHistory();
   } catch (error) { showNotice(error.message); }
@@ -237,7 +304,7 @@ async function followJob(id) {
     if (job.status === 'completed') {
       sessionStorage.removeItem('cloudlink.pendingJob');
       showNotice('');
-      showResult(job);
+      saveLatestResult(job);
       return;
     }
     if (job.status === 'failed') {
@@ -272,7 +339,8 @@ $('test-type').addEventListener('change', updateTestType);
 $('refresh').addEventListener('click', loadNodes);
 $('diagnostic-form').addEventListener('submit', runTest);
 modeButtons.forEach((button) => button.addEventListener('click', () => selectMode(button.dataset.mode)));
+window.addEventListener('hashchange', showPage);
+showPage();
 updateTestType();
 loadNodes();
-loadHistory();
 resumeJob();
