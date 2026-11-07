@@ -108,6 +108,7 @@ class JobStore:
         return {
             "id": job["id"], "status": status, "timestamp": job["created_at"],
             "source_name": job["source_name"], "destination_name": job["destination_name"],
+            "mode": job["request"].get("mode", "live"),
             "test_type": job["request"]["test_type"], "address_type": job["request"]["address_type"],
             "summary": {"queued": "Queued", "running": "Running", "failed": "Could not run"}[status],
             "error": error,

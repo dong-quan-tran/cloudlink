@@ -2,10 +2,14 @@
 # Run in your personal account's CloudShell. No options or API keys required.
 set -Eeuo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+branch=$(git -C "$repo_dir" branch --show-current)
+if [[ -z $branch ]]; then
+  printf 'Check out a branch before deploying CloudLink.\n' >&2
+  exit 1
+fi
 aws_args=(--region us-east-1 --no-cli-pager)
 account=$(aws sts get-caller-identity "${aws_args[@]}" --query Account --output text)
-revision=$(git -C "$repo_dir" rev-parse HEAD)
-printf 'Deploying CloudLink in account %s, us-east-1.\n' "$account"
+printf 'Deploying CloudLink branch %s in account %s, us-east-1.\n' "$branch" "$account"
 
 # AWS manages the CloudFront address ranges; look up their regional prefix list.
 prefix_list=$(aws ec2 describe-managed-prefix-lists "${aws_args[@]}" \
@@ -31,7 +35,7 @@ deploy_stack() {
 deploy_stack cloudlink-network network --parameter-overrides "CloudFrontPrefixListId=$prefix_list"
 deploy_stack cloudlink-services services
 deploy_stack cloudlink-probes probes
-deploy_stack cloudlink-web web --parameter-overrides "RepositoryCommit=$revision"
+deploy_stack cloudlink-web web --parameter-overrides "RepositoryBranch=$branch"
 
 url=$(aws cloudformation describe-stacks "${aws_args[@]}" --stack-name cloudlink-web \
   --query "Stacks[0].Outputs[?OutputKey=='WebUrl'].OutputValue | [0]" --output text)

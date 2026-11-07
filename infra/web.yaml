@@ -7,10 +7,11 @@ Parameters:
   ServicesStackName:
     Type: String
     Default: cloudlink-services
-  RepositoryCommit:
+  RepositoryBranch:
     Type: String
-    AllowedPattern: '^[a-f0-9]{40}$'
-    Description: Commit installed on every app instance; supplied by deploy.sh
+    Default: main
+    AllowedPattern: '^[A-Za-z0-9_][A-Za-z0-9._/-]*$'
+    Description: GitHub branch cloned by each app instance at startup
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
@@ -93,8 +94,7 @@ Resources:
                 install -d -m 0755 /etc/cloudlink /opt/cloudlink
                 install -m 0600 -o cloudlink -g cloudlink /dev/null /var/lib/cloudlink/.ssh/id_ed25519
                 aws ssm get-parameter --region '${AWS::Region}' --name '${KeyParameter}' --with-decryption --query Parameter.Value --output text > /var/lib/cloudlink/.ssh/id_ed25519
-                git clone --single-branch --branch main https://github.com/dong-quan-tran/cloudlink.git /opt/cloudlink/app
-                git -C /opt/cloudlink/app checkout --detach '${RepositoryCommit}'
+                git clone --depth 1 --branch '${RepositoryBranch}' https://github.com/dong-quan-tran/cloudlink.git /opt/cloudlink/app
                 python3.11 -m venv /opt/cloudlink/venv
                 /opt/cloudlink/venv/bin/pip install -r /opt/cloudlink/app/requirements.txt
                 cat > /etc/cloudlink/runtime.env <<'ENV'
