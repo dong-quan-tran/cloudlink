@@ -57,7 +57,7 @@ Resources:
     Properties:
       LaunchTemplateData:
         ImageId: !Ref LatestAmiId
-        InstanceType: t3.micro
+        InstanceType: t3.small
         CreditSpecification: {CpuCredits: standard}
         IamInstanceProfile:
           Name:
