@@ -182,8 +182,13 @@ class WebTests(unittest.TestCase):
                                   "request": {"address_type": "private", "test_type": "tcp", "port": Decimal(8080)}}
         store.claim.return_value = True
         store.complete.return_value = True
-        with patch.dict(os.environ, {"CLOUDLINK_KEY_PATH": "/local-fixture"}):
+        with patch.dict(os.environ, {"CLOUDLINK_KEY_PATH": "/local-fixture"}), self.assertLogs("cloudlink.worker", level="INFO") as logs:
             process_message(store, FakeSession(), {"Body": json.dumps({"id": "job-1"}), "ReceiptHandle": "receipt"})
+        event, = (json.loads(record.getMessage()) for record in logs.records)
+        self.assertEqual(event["event"], "diagnostic_completed")
+        self.assertEqual(event["test_type"], "tcp")
+        self.assertEqual(event["outcome"], "unreachable")
+        self.assertGreaterEqual(event["duration_ms"], 0)
         store.complete.assert_called_once_with("job-1", store.claim.call_args.args[1], probe.return_value)
         self.assertEqual(store.complete.call_args.args[2]["network_analysis"], analysis.return_value)
         self.assertEqual(analysis.call_args.kwargs["port"], 8080)

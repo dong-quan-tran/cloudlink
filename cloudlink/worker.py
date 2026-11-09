@@ -17,6 +17,26 @@ from .probe import discover_nodes, run_probe
 logger = logging.getLogger(__name__)
 
 
+def log_completion(job_id: str, mode: str, test_type: str, result: dict[str, Any], started: float) -> None:
+    if mode == "configuration":
+        outcome = result["network_analysis"]["status"]
+    else:
+        check = result["check"]
+        if check.get("management_error") or check.get("incomplete"):
+            outcome = "probe_unavailable"
+        else:
+            outcome = "reachable" if check["ok"] else "unreachable"
+    logger.info(json.dumps({
+        "event": "diagnostic_completed", "job_id": job_id, "mode": mode,
+        "test_type": test_type, "outcome": outcome,
+        "duration_ms": round((time.monotonic() - started) * 1000),
+    }))
+
+
+def log_execution_error(job_id: str, reason: str) -> None:
+    logger.warning(json.dumps({"event": "diagnostic_execution_error", "job_id": job_id, "reason": reason}))
+
+
 def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> None:
     job_id = json.loads(message["Body"])["id"]
     job = store.get(job_id)
@@ -30,16 +50,19 @@ def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> N
         return
     if int(job["deadline"]) <= int(time.time()):
         store.fail(job_id, "This request timed out. Please submit a new test.")
+        log_execution_error(job_id, "deadline_exceeded")
         acknowledge()
         return
     owner = str(uuid.uuid4())
     if not store.claim(job_id, owner):
         return  # Another worker has a live lease. Do not acknowledge its work.
+    started = time.monotonic()
     try:
         nodes = {node.instance_id: node for node in discover_nodes(session.client("ec2"))}
         source, destination = nodes.get(job["source_id"]), nodes.get(job["destination_id"])
         if source is None or destination is None:
             store.fail(job_id, "One of the selected lab instances is no longer running.", owner=owner)
+            log_execution_error(job_id, "instance_unavailable")
             acknowledge()
             return
         request = dict(job["request"])
@@ -56,8 +79,10 @@ def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> N
             if not result["check"]["ok"]:
                 result["network_analysis"] = analyze_network(session, source, destination, **request)
         if store.complete(job_id, owner, result):
+            log_completion(job_id, mode, request["test_type"], result, started)
             acknowledge()
     except Exception:
+        log_execution_error(job_id, "worker_attempt_failed")
         logger.exception("Job %s failed; SQS will retry it", job_id)
         if int(message.get("Attributes", {}).get("ApproximateReceiveCount", "1")) >= 3:
             store.fail(job_id, "The worker could not complete this request after three deliveries. Please retry.", owner=owner)
@@ -67,7 +92,7 @@ def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> N
 def main() -> None:
     import boto3
 
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     session = boto3.session.Session(region_name=os.getenv("AWS_REGION", "us-east-1"))
     store = JobStore(session, os.environ["CLOUDLINK_TABLE_NAME"], os.environ["CLOUDLINK_QUEUE_URL"])
     stopping = False
