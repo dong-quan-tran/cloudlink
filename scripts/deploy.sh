@@ -20,7 +20,7 @@ if [[ -z $prefix_list || $prefix_list == None ]]; then
   exit 1
 fi
 
-for template in network services probes web; do
+for template in network services scenarios/shared-vpcs scenarios/single-vpc scenarios/peering web; do
   aws cloudformation validate-template "${aws_args[@]}" --template-body "file://$repo_dir/infra/$template.yaml" >/dev/null
 done
 
@@ -34,7 +34,16 @@ deploy_stack() {
 
 deploy_stack cloudlink-network network --parameter-overrides "CloudFrontPrefixListId=$prefix_list"
 deploy_stack cloudlink-services services
-deploy_stack cloudlink-probes probes
+deploy_stack cloudlink-demo-network scenarios/shared-vpcs
+
+for scenario in healthy-private-subnets sg-block-8080 nacl-block-8080; do
+  deploy_stack "cloudlink-demo-$scenario" scenarios/single-vpc --parameter-overrides "Scenario=$scenario"
+done
+for scenario in peering-working peering-missing-forward-route peering-missing-return-route \
+                wrong-route-table-association multiple-blockers; do
+  deploy_stack "cloudlink-demo-$scenario" scenarios/peering --parameter-overrides "Scenario=$scenario"
+done
+
 deploy_stack cloudlink-web web --parameter-overrides "RepositoryBranch=$branch"
 
 url=$(aws cloudformation describe-stacks "${aws_args[@]}" --stack-name cloudlink-web \
