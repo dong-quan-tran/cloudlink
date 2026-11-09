@@ -247,18 +247,6 @@ Outputs:
     Value: !Ref AppSubnetB
     Export:
       Name: !Sub '${AWS::StackName}-AppSubnetBId'
-  AppRoutesAId:
-    Value: !Ref AppRoutesA
-    Export:
-      Name: !Sub '${AWS::StackName}-AppRoutesAId'
-  AppRoutesBId:
-    Value: !Ref AppRoutesB
-    Export:
-      Name: !Sub '${AWS::StackName}-AppRoutesBId'
-  ProbeRoutesAId:
-    Value: !Ref ProbeRoutesA
-    Export:
-      Name: !Sub '${AWS::StackName}-ProbeRoutesAId'
   SubnetAId:
     Value: !Ref ProbeSubnetA
     Export:
