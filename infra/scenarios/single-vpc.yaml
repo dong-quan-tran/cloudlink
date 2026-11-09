@@ -1,10 +1,15 @@
-# Standalone template. Management routes are separate from scenario test routes.
+# Each Scenario value is a separate stack with reserved CIDRs and neutral probe names.
+# Web VPC management routes remain independent of every test fault.
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'CloudLink scenario: nacl-block-8080. Two private probes with separate app management paths.'
-Metadata:
-  Scenario: nacl-block-8080
-  Note: Deploy only one CloudLink scenario stack at a time.
+Description: CloudLink reusable single-VPC scenarios; deploy one stack per Scenario.
 Parameters:
+  Scenario:
+    Type: String
+    Default: sg-block-8080
+    AllowedValues:
+    - sg-block-8080
+    - nacl-block-8080
+    Description: Deploy a separate stack for each case. Each has reserved CIDRs and probe names.
   NetworkStackName:
     Type: String
     Default: cloudlink-network
@@ -14,147 +19,216 @@ Parameters:
   AppRouteTableAId:
     Type: String
     AllowedPattern: rtb-[0-9a-f]+
-    Description: Existing AppRoutesA physical ID; deploy.sh discovers it.
+    Description: Physical ID of AppRoutesA in the existing network stack.
   AppRouteTableBId:
     Type: String
     AllowedPattern: rtb-[0-9a-f]+
-    Description: Existing AppRoutesB physical ID; deploy.sh discovers it.
+    Description: Physical ID of AppRoutesB in the existing network stack.
   AvailabilityZone:
     Type: AWS::EC2::AvailabilityZone::Name
     Default: us-east-1a
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+Mappings:
+  ScenarioSettings:
+    sg-block-8080:
+      SourceVpcCidr: 10.60.0.0/16
+      SourceSubnetCidr: 10.60.1.0/24
+      DestinationSubnetCidr: 10.60.2.0/24
+      SourceName: CloudLink-Node-C
+      DestinationName: CloudLink-Node-D
+      ExpectedPing: PASS / PASS
+      ExpectedTcp8080: FAIL / PASS
+    nacl-block-8080:
+      SourceVpcCidr: 10.61.0.0/16
+      SourceSubnetCidr: 10.61.1.0/24
+      DestinationSubnetCidr: 10.61.2.0/24
+      SourceName: CloudLink-Node-E
+      DestinationName: CloudLink-Node-F
+      ExpectedPing: PASS / PASS
+      ExpectedTcp8080: FAIL / PASS
+Conditions:
+  BlockDestination8080:
+    Fn::Equals:
+    - Ref: Scenario
+    - sg-block-8080
+  AllowDestination8080:
+    Fn::Not:
+    - Condition: BlockDestination8080
+  UseDestinationAcl:
+    Fn::Equals:
+    - Ref: Scenario
+    - nacl-block-8080
 Resources:
-  VpcA:
+  SourceVpc:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: 10.60.0.0/16
+      CidrBlock:
+        Fn::FindInMap:
+        - ScenarioSettings
+        - Ref: Scenario
+        - SourceVpcCidr
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-VPC-A
+        Value:
+          Fn::Sub: ${AWS::StackName}-Source-VPC
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
-  AppPeeringA:
+        Value:
+          Ref: Scenario
+  SourceManagementPeering:
     Type: AWS::EC2::VPCPeeringConnection
     Properties:
       VpcId:
         Fn::ImportValue:
           Fn::Sub: ${NetworkStackName}-AppVpcId
       PeerVpcId:
-        Ref: VpcA
+        Ref: SourceVpc
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-App-to-A
+        Value:
+          Fn::Sub: ${AWS::StackName}-Web-to-Source
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
-  AppAToVpcA:
+        Value:
+          Ref: Scenario
+  AppAToSource:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId:
         Ref: AppRouteTableAId
-      DestinationCidrBlock: 10.60.0.0/16
+      DestinationCidrBlock:
+        Fn::FindInMap:
+        - ScenarioSettings
+        - Ref: Scenario
+        - SourceVpcCidr
       VpcPeeringConnectionId:
-        Ref: AppPeeringA
-  AppBToVpcA:
+        Ref: SourceManagementPeering
+  AppBToSource:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId:
         Ref: AppRouteTableBId
-      DestinationCidrBlock: 10.60.0.0/16
+      DestinationCidrBlock:
+        Fn::FindInMap:
+        - ScenarioSettings
+        - Ref: Scenario
+        - SourceVpcCidr
       VpcPeeringConnectionId:
-        Ref: AppPeeringA
-  SubnetA:
+        Ref: SourceManagementPeering
+  SourceSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId:
-        Ref: VpcA
-      CidrBlock: 10.60.1.0/24
+        Ref: SourceVpc
+      CidrBlock:
+        Fn::FindInMap:
+        - ScenarioSettings
+        - Ref: Scenario
+        - SourceSubnetCidr
       AvailabilityZone:
         Ref: AvailabilityZone
       MapPublicIpOnLaunch: false
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-Subnet-A
+        Value:
+          Fn::Sub: ${AWS::StackName}-Source-Subnet
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
-  RoutesA:
+        Value:
+          Ref: Scenario
+  SourceRoutes:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId:
-        Ref: VpcA
+        Ref: SourceVpc
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-Routes-A
+        Value:
+          Fn::Sub: ${AWS::StackName}-Source-Routes
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
-  RouteAssociationA:
+        Value:
+          Ref: Scenario
+  SourceAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId:
-        Ref: SubnetA
+        Ref: SourceSubnet
       RouteTableId:
-        Ref: RoutesA
-  ManagementReturnA:
+        Ref: SourceRoutes
+  SourceManagementReturn:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId:
-        Ref: RoutesA
+        Ref: SourceRoutes
       DestinationCidrBlock: 10.20.0.0/16
       VpcPeeringConnectionId:
-        Ref: AppPeeringA
-  SecurityGroupA:
+        Ref: SourceManagementPeering
+  SourceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId:
-        Ref: VpcA
-      GroupDescription: CloudLink nacl-block-8080 probe A
+        Ref: SourceVpc
+      GroupDescription: CloudLink scenario source probe
       SecurityGroupIngress:
       - IpProtocol: icmp
         FromPort: -1
         ToPort: -1
-        CidrIp: 10.60.2.0/24
-        Description: Ping from the other scenario probe subnet
-      - IpProtocol: tcp
-        FromPort: 8080
-        ToPort: 8080
-        CidrIp: 10.60.2.0/24
-        Description: Test service from the other scenario probe subnet
+        CidrIp:
+          Fn::FindInMap:
+          - ScenarioSettings
+          - Ref: Scenario
+          - DestinationSubnetCidr
+        Description: Ping from the other probe subnet
       SecurityGroupEgress:
       - IpProtocol: '-1'
         CidrIp: 0.0.0.0/0
-        Description: Allow requests and replies; no internet route exists
+        Description: Allow outbound; private subnets have no internet route
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-SG-A
+        Value:
+          Fn::Sub: ${AWS::StackName}-Source-SG
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
-  ManagementSshA:
+        Value:
+          Ref: Scenario
+  SourceTcp8080:
     Type: AWS::EC2::SecurityGroupIngress
-    DependsOn: AppPeeringA
     Properties:
       GroupId:
-        Ref: SecurityGroupA
+        Ref: SourceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      CidrIp:
+        Fn::FindInMap:
+        - ScenarioSettings
+        - Ref: Scenario
+        - DestinationSubnetCidr
+      Description: Test service from the other probe subnet
+  SourceManagementSsh:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: SourceManagementPeering
+    Properties:
+      GroupId:
+        Ref: SourceSecurityGroup
       IpProtocol: tcp
       FromPort: 22
       ToPort: 22
       SourceSecurityGroupId:
         Fn::ImportValue:
           Fn::Sub: ${NetworkStackName}-AppSecurityGroupId
-      Description: CloudLink app management only; probe-to-probe SSH stays blocked
-  InstanceA:
+      Description: Web VPC management only; probe-to-probe SSH stays blocked
+  SourceInstance:
     Type: AWS::EC2::Instance
     Properties:
       ImageId:
@@ -171,9 +245,9 @@ Resources:
         AssociatePublicIpAddress: false
         DeleteOnTermination: true
         SubnetId:
-          Ref: SubnetA
+          Ref: SourceSubnet
         GroupSet:
-        - Ref: SecurityGroupA
+        - Ref: SourceSecurityGroup
       BlockDeviceMappings:
       - DeviceName: /dev/xvda
         Ebs:
@@ -182,11 +256,16 @@ Resources:
           DeleteOnTermination: true
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-A
+        Value:
+          Fn::FindInMap:
+          - ScenarioSettings
+          - Ref: Scenario
+          - SourceName
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
+        Value:
+          Ref: Scenario
       - Key: CloudLinkRole
         Value: Probe
       UserData:
@@ -194,7 +273,7 @@ Resources:
           #!/bin/bash
           set -euxo pipefail
           mkdir -p /opt/cloudlink
-          printf 'CloudLink node A\n' > /opt/cloudlink/health
+          printf 'CloudLink probe\n' > /opt/cloudlink/health
           cat > /etc/systemd/system/cloudlink-health.service <<'UNIT'
           [Unit]
           Description=CloudLink test HTTP endpoint
@@ -211,91 +290,115 @@ Resources:
           UNIT
           systemctl daemon-reload
           systemctl enable --now cloudlink-health.service
-  SubnetB:
+  DestinationSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId:
-        Ref: VpcA
-      CidrBlock: 10.60.2.0/24
+        Ref: SourceVpc
+      CidrBlock:
+        Fn::FindInMap:
+        - ScenarioSettings
+        - Ref: Scenario
+        - DestinationSubnetCidr
       AvailabilityZone:
         Ref: AvailabilityZone
       MapPublicIpOnLaunch: false
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-Subnet-B
+        Value:
+          Fn::Sub: ${AWS::StackName}-Destination-Subnet
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
-  RoutesB:
+        Value:
+          Ref: Scenario
+  DestinationRoutes:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId:
-        Ref: VpcA
+        Ref: SourceVpc
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-Routes-B
+        Value:
+          Fn::Sub: ${AWS::StackName}-Destination-Routes
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
-  RouteAssociationB:
+        Value:
+          Ref: Scenario
+  DestinationAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId:
-        Ref: SubnetB
+        Ref: DestinationSubnet
       RouteTableId:
-        Ref: RoutesB
-  ManagementReturnB:
+        Ref: DestinationRoutes
+  DestinationManagementReturn:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId:
-        Ref: RoutesB
+        Ref: DestinationRoutes
       DestinationCidrBlock: 10.20.0.0/16
       VpcPeeringConnectionId:
-        Ref: AppPeeringA
-  SecurityGroupB:
+        Ref: SourceManagementPeering
+  DestinationSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId:
-        Ref: VpcA
-      GroupDescription: CloudLink nacl-block-8080 probe B
+        Ref: SourceVpc
+      GroupDescription: CloudLink scenario destination probe
       SecurityGroupIngress:
       - IpProtocol: icmp
         FromPort: -1
         ToPort: -1
-        CidrIp: 10.60.1.0/24
-        Description: Ping from the other scenario probe subnet
-      - IpProtocol: tcp
-        FromPort: 8080
-        ToPort: 8080
-        CidrIp: 10.60.1.0/24
-        Description: Test service from the other scenario probe subnet
+        CidrIp:
+          Fn::FindInMap:
+          - ScenarioSettings
+          - Ref: Scenario
+          - SourceSubnetCidr
+        Description: Ping from the other probe subnet
       SecurityGroupEgress:
       - IpProtocol: '-1'
         CidrIp: 0.0.0.0/0
-        Description: Allow requests and replies; no internet route exists
+        Description: Allow outbound; private subnets have no internet route
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-SG-B
+        Value:
+          Fn::Sub: ${AWS::StackName}-Destination-SG
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
-  ManagementSshB:
+        Value:
+          Ref: Scenario
+  DestinationTcp8080:
     Type: AWS::EC2::SecurityGroupIngress
-    DependsOn: AppPeeringA
+    Condition: AllowDestination8080
     Properties:
       GroupId:
-        Ref: SecurityGroupB
+        Ref: DestinationSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      CidrIp:
+        Fn::FindInMap:
+        - ScenarioSettings
+        - Ref: Scenario
+        - SourceSubnetCidr
+      Description: Test service from the other probe subnet
+  DestinationManagementSsh:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: SourceManagementPeering
+    Properties:
+      GroupId:
+        Ref: DestinationSecurityGroup
       IpProtocol: tcp
       FromPort: 22
       ToPort: 22
       SourceSecurityGroupId:
         Fn::ImportValue:
           Fn::Sub: ${NetworkStackName}-AppSecurityGroupId
-      Description: CloudLink app management only; probe-to-probe SSH stays blocked
-  InstanceB:
+      Description: Web VPC management only; probe-to-probe SSH stays blocked
+  DestinationInstance:
     Type: AWS::EC2::Instance
     Properties:
       ImageId:
@@ -312,9 +415,9 @@ Resources:
         AssociatePublicIpAddress: false
         DeleteOnTermination: true
         SubnetId:
-          Ref: SubnetB
+          Ref: DestinationSubnet
         GroupSet:
-        - Ref: SecurityGroupB
+        - Ref: DestinationSecurityGroup
       BlockDeviceMappings:
       - DeviceName: /dev/xvda
         Ebs:
@@ -323,11 +426,16 @@ Resources:
           DeleteOnTermination: true
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-B
+        Value:
+          Fn::FindInMap:
+          - ScenarioSettings
+          - Ref: Scenario
+          - DestinationName
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
+        Value:
+          Ref: Scenario
       - Key: CloudLinkRole
         Value: Probe
       UserData:
@@ -335,7 +443,7 @@ Resources:
           #!/bin/bash
           set -euxo pipefail
           mkdir -p /opt/cloudlink
-          printf 'CloudLink node B\n' > /opt/cloudlink/health
+          printf 'CloudLink probe\n' > /opt/cloudlink/health
           cat > /etc/systemd/system/cloudlink-health.service <<'UNIT'
           [Unit]
           Description=CloudLink test HTTP endpoint
@@ -354,25 +462,30 @@ Resources:
           systemctl enable --now cloudlink-health.service
   DestinationAcl:
     Type: AWS::EC2::NetworkAcl
+    Condition: UseDestinationAcl
     Properties:
       VpcId:
-        Ref: VpcA
+        Ref: SourceVpc
       Tags:
       - Key: Name
-        Value: CloudLink-nacl-block-8080-B-ACL
+        Value:
+          Fn::Sub: ${AWS::StackName}-Destination-ACL
       - Key: Project
         Value: CloudLink
       - Key: Scenario
-        Value: nacl-block-8080
+        Value:
+          Ref: Scenario
   DestinationAclAssociation:
     Type: AWS::EC2::SubnetNetworkAclAssociation
+    Condition: UseDestinationAcl
     Properties:
       SubnetId:
-        Ref: SubnetB
+        Ref: DestinationSubnet
       NetworkAclId:
         Ref: DestinationAcl
-  Deny8080:
+  DenyInbound8080:
     Type: AWS::EC2::NetworkAclEntry
+    Condition: UseDestinationAcl
     Properties:
       NetworkAclId:
         Ref: DestinationAcl
@@ -380,12 +493,17 @@ Resources:
       Protocol: 6
       RuleAction: deny
       Egress: false
-      CidrBlock: 10.60.1.0/24
+      CidrBlock:
+        Fn::FindInMap:
+        - ScenarioSettings
+        - Ref: Scenario
+        - SourceSubnetCidr
       PortRange:
         From: 8080
         To: 8080
-  AllowInbound:
+  AllowAclInbound:
     Type: AWS::EC2::NetworkAclEntry
+    Condition: UseDestinationAcl
     Properties:
       NetworkAclId:
         Ref: DestinationAcl
@@ -394,8 +512,9 @@ Resources:
       RuleAction: allow
       Egress: false
       CidrBlock: 0.0.0.0/0
-  AllowOutbound:
+  AllowAclOutbound:
     Type: AWS::EC2::NetworkAclEntry
+    Condition: UseDestinationAcl
     Properties:
       NetworkAclId:
         Ref: DestinationAcl
@@ -406,32 +525,47 @@ Resources:
       CidrBlock: 0.0.0.0/0
 Outputs:
   Scenario:
-    Value: nacl-block-8080
-  NodeAName:
-    Value: CloudLink-nacl-block-8080-A
-  NodeAInstanceId:
     Value:
-      Ref: InstanceA
-  NodeAPrivateIp:
+      Ref: Scenario
+  SourceName:
     Value:
-      Fn::GetAtt:
-      - InstanceA
-      - PrivateIp
-  NodeBName:
-    Value: CloudLink-nacl-block-8080-B
-  NodeBInstanceId:
+      Fn::FindInMap:
+      - ScenarioSettings
+      - Ref: Scenario
+      - SourceName
+  SourceInstanceId:
     Value:
-      Ref: InstanceB
-  NodeBPrivateIp:
+      Ref: SourceInstance
+  SourcePrivateIp:
     Value:
       Fn::GetAtt:
-      - InstanceB
+      - SourceInstance
       - PrivateIp
-  ManagementSsh:
-    Value: 'PASS: CloudLink app can SSH to A and B; probe-to-probe SSH is blocked.'
+  DestinationName:
+    Value:
+      Fn::FindInMap:
+      - ScenarioSettings
+      - Ref: Scenario
+      - DestinationName
+  DestinationInstanceId:
+    Value:
+      Ref: DestinationInstance
+  DestinationPrivateIp:
+    Value:
+      Fn::GetAtt:
+      - DestinationInstance
+      - PrivateIp
   ExpectedPing:
-    Description: A to B / B to A, using private IPs
-    Value: PASS / PASS
+    Description: Source to destination / destination to source
+    Value:
+      Fn::FindInMap:
+      - ScenarioSettings
+      - Ref: Scenario
+      - ExpectedPing
   ExpectedTcp8080:
-    Description: A to B / B to A, using private IPs
-    Value: FAIL / PASS
+    Description: Source to destination / destination to source
+    Value:
+      Fn::FindInMap:
+      - ScenarioSettings
+      - Ref: Scenario
+      - ExpectedTcp8080
