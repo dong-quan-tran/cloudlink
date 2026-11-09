@@ -1,693 +1,324 @@
-# Each Scenario value is a separate stack with reserved CIDRs and neutral probe names.
-# Web VPC management routes remain independent of every test fault.
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudLink reusable peering scenarios; deploy one stack per Scenario.
+Description: CloudLink peered demo cases using the shared demo network
+
 Parameters:
   Scenario:
     Type: String
     Default: peering-working
-    AllowedValues:
-    - peering-working
-    - peering-missing-forward-route
-    - peering-missing-return-route
-    - wrong-route-table-association
-    - multiple-blockers
-    Description: Deploy a separate stack for each case. Each has reserved CIDRs and probe names.
+    AllowedValues: [peering-working, peering-missing-forward-route, peering-missing-return-route, wrong-route-table-association, multiple-blockers]
+  DemoNetworkStackName:
+    Type: String
+    Default: cloudlink-demo-network
   NetworkStackName:
     Type: String
     Default: cloudlink-network
   ServicesStackName:
     Type: String
     Default: cloudlink-services
-  AppRouteTableAId:
-    Type: String
-    AllowedPattern: rtb-[0-9a-f]+
-    Description: Physical ID of AppRoutesA in the existing network stack.
-  AppRouteTableBId:
-    Type: String
-    AllowedPattern: rtb-[0-9a-f]+
-    Description: Physical ID of AppRoutesB in the existing network stack.
   AvailabilityZone:
     Type: AWS::EC2::AvailabilityZone::Name
     Default: us-east-1a
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
 Mappings:
   ScenarioSettings:
     peering-working:
-      SourceVpcCidr: 10.62.0.0/16
-      SourceSubnetCidr: 10.62.1.0/24
-      DestinationSubnetCidr: 10.63.1.0/24
+      SourceSubnet: 10.60.5.0/24
+      DestinationSubnet: 10.61.5.0/24
+      SourceIp: 10.60.5.10
+      DestinationIp: 10.61.5.10
       SourceName: CloudLink-Node-G
       DestinationName: CloudLink-Node-H
-      ExpectedPing: PASS / PASS
-      ExpectedTcp8080: PASS / PASS
-      DestinationVpcCidr: 10.63.0.0/16
     peering-missing-forward-route:
-      SourceVpcCidr: 10.64.0.0/16
-      SourceSubnetCidr: 10.64.1.0/24
-      DestinationSubnetCidr: 10.65.1.0/24
+      SourceSubnet: 10.60.6.0/24
+      DestinationSubnet: 10.61.6.0/24
+      SourceIp: 10.60.6.10
+      DestinationIp: 10.61.6.10
       SourceName: CloudLink-Node-I
       DestinationName: CloudLink-Node-J
-      ExpectedPing: FAIL / FAIL
-      ExpectedTcp8080: FAIL / FAIL
-      DestinationVpcCidr: 10.65.0.0/16
     peering-missing-return-route:
-      SourceVpcCidr: 10.66.0.0/16
-      SourceSubnetCidr: 10.66.1.0/24
-      DestinationSubnetCidr: 10.67.1.0/24
+      SourceSubnet: 10.60.7.0/24
+      DestinationSubnet: 10.61.7.0/24
+      SourceIp: 10.60.7.10
+      DestinationIp: 10.61.7.10
       SourceName: CloudLink-Node-K
       DestinationName: CloudLink-Node-L
-      ExpectedPing: FAIL / FAIL
-      ExpectedTcp8080: FAIL / FAIL
-      DestinationVpcCidr: 10.67.0.0/16
     wrong-route-table-association:
-      SourceVpcCidr: 10.68.0.0/16
-      SourceSubnetCidr: 10.68.1.0/24
-      DestinationSubnetCidr: 10.69.1.0/24
+      SourceSubnet: 10.60.8.0/24
+      DestinationSubnet: 10.61.8.0/24
+      SourceIp: 10.60.8.10
+      DestinationIp: 10.61.8.10
       SourceName: CloudLink-Node-M
       DestinationName: CloudLink-Node-N
-      ExpectedPing: FAIL / FAIL
-      ExpectedTcp8080: FAIL / FAIL
-      DestinationVpcCidr: 10.69.0.0/16
     multiple-blockers:
-      SourceVpcCidr: 10.70.0.0/16
-      SourceSubnetCidr: 10.70.1.0/24
-      DestinationSubnetCidr: 10.71.1.0/24
+      SourceSubnet: 10.60.9.0/24
+      DestinationSubnet: 10.61.9.0/24
+      SourceIp: 10.60.9.10
+      DestinationIp: 10.61.9.10
       SourceName: CloudLink-Node-O
       DestinationName: CloudLink-Node-P
-      ExpectedPing: FAIL / FAIL
-      ExpectedTcp8080: FAIL / FAIL
-      DestinationVpcCidr: 10.71.0.0/16
+
 Conditions:
-  BlockDestination8080:
-    Fn::Equals:
-    - Ref: Scenario
-    - multiple-blockers
-  AllowDestination8080:
-    Fn::Not:
-    - Condition: BlockDestination8080
-  UseDestinationAcl:
-    Fn::Equals:
-    - Ref: Scenario
-    - multiple-blockers
-  HasForwardRoute:
-    Fn::Not:
-    - Fn::Equals:
-      - Ref: Scenario
-      - peering-missing-forward-route
-  HasReturnRoute:
-    Fn::Not:
-    - Fn::Or:
-      - Fn::Equals:
-        - Ref: Scenario
-        - peering-missing-return-route
-      - Fn::Equals:
-        - Ref: Scenario
-        - multiple-blockers
-  WrongAssociation:
-    Fn::Equals:
-    - Ref: Scenario
-    - wrong-route-table-association
+  AllowDestination8080: !Not [!Equals [!Ref Scenario, multiple-blockers]]
+  UseDestinationAcl: !Equals [!Ref Scenario, multiple-blockers]
+  HasForwardRoute: !Not [!Equals [!Ref Scenario, peering-missing-forward-route]]
+  HasReturnRoute: !Not [!Or [!Equals [!Ref Scenario, peering-missing-return-route], !Equals [!Ref Scenario, multiple-blockers]]]
+  WrongAssociation: !Equals [!Ref Scenario, wrong-route-table-association]
+
 Resources:
-  SourceVpc:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - SourceVpcCidr
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Source-VPC
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
-  SourceManagementPeering:
-    Type: AWS::EC2::VPCPeeringConnection
-    Properties:
-      VpcId:
-        Fn::ImportValue:
-          Fn::Sub: ${NetworkStackName}-AppVpcId
-      PeerVpcId:
-        Ref: SourceVpc
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Web-to-Source
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
-  AppAToSource:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId:
-        Ref: AppRouteTableAId
-      DestinationCidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - SourceVpcCidr
-      VpcPeeringConnectionId:
-        Ref: SourceManagementPeering
-  AppBToSource:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId:
-        Ref: AppRouteTableBId
-      DestinationCidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - SourceVpcCidr
-      VpcPeeringConnectionId:
-        Ref: SourceManagementPeering
-  DestinationVpc:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - DestinationVpcCidr
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Destination-VPC
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
-  DestinationManagementPeering:
-    Type: AWS::EC2::VPCPeeringConnection
-    Properties:
-      VpcId:
-        Fn::ImportValue:
-          Fn::Sub: ${NetworkStackName}-AppVpcId
-      PeerVpcId:
-        Ref: DestinationVpc
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Web-to-Destination
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
-  AppAToDestination:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId:
-        Ref: AppRouteTableAId
-      DestinationCidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - DestinationVpcCidr
-      VpcPeeringConnectionId:
-        Ref: DestinationManagementPeering
-  AppBToDestination:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId:
-        Ref: AppRouteTableBId
-      DestinationCidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - DestinationVpcCidr
-      VpcPeeringConnectionId:
-        Ref: DestinationManagementPeering
   SourceSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId:
-        Ref: SourceVpc
-      CidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - SourceSubnetCidr
-      AvailabilityZone:
-        Ref: AvailabilityZone
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-DemoVpcA'
+      CidrBlock: !FindInMap [ScenarioSettings, !Ref Scenario, SourceSubnet]
+      AvailabilityZone: !Ref AvailabilityZone
       MapPublicIpOnLaunch: false
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Source-Subnet
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-Source-Subnet'}]
   SourceRoutes:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId:
-        Ref: SourceVpc
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Source-Routes
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-DemoVpcA'
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-Source-Routes'}]
   SourceAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId:
-        Ref: SourceSubnet
-      RouteTableId:
-        Fn::If:
-        - WrongAssociation
-        - Ref: WrongSourceRoutes
-        - Ref: SourceRoutes
+      SubnetId: !Ref SourceSubnet
+      RouteTableId: !If [WrongAssociation, !Ref WrongSourceRoutes, !Ref SourceRoutes]
   SourceManagementReturn:
     Type: AWS::EC2::Route
     Properties:
-      RouteTableId:
-        Ref: SourceRoutes
+      RouteTableId: !Ref SourceRoutes
       DestinationCidrBlock: 10.20.0.0/16
       VpcPeeringConnectionId:
-        Ref: SourceManagementPeering
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-WebPeeringA'
   SourceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      VpcId:
-        Ref: SourceVpc
       GroupDescription: CloudLink scenario source probe
+      VpcId:
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-DemoVpcA'
       SecurityGroupIngress:
-      - IpProtocol: icmp
-        FromPort: -1
-        ToPort: -1
-        CidrIp:
-          Fn::FindInMap:
-          - ScenarioSettings
-          - Ref: Scenario
-          - DestinationSubnetCidr
-        Description: Ping from the other probe subnet
+        - {IpProtocol: icmp, FromPort: -1, ToPort: -1, CidrIp: !FindInMap [ScenarioSettings, !Ref Scenario, DestinationSubnet]}
       SecurityGroupEgress:
-      - IpProtocol: '-1'
-        CidrIp: 0.0.0.0/0
-        Description: Allow outbound; private subnets have no internet route
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Source-SG
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-Source-SG'}]
   SourceTcp8080:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      GroupId:
-        Ref: SourceSecurityGroup
+      GroupId: !Ref SourceSecurityGroup
       IpProtocol: tcp
       FromPort: 8080
       ToPort: 8080
-      CidrIp:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - DestinationSubnetCidr
-      Description: Test service from the other probe subnet
+      CidrIp: !FindInMap [ScenarioSettings, !Ref Scenario, DestinationSubnet]
   SourceManagementSsh:
     Type: AWS::EC2::SecurityGroupIngress
-    DependsOn: SourceManagementPeering
     Properties:
-      GroupId:
-        Ref: SourceSecurityGroup
+      GroupId: !Ref SourceSecurityGroup
       IpProtocol: tcp
       FromPort: 22
       ToPort: 22
       SourceSecurityGroupId:
-        Fn::ImportValue:
-          Fn::Sub: ${NetworkStackName}-AppSecurityGroupId
-      Description: Web VPC management only; probe-to-probe SSH stays blocked
+        Fn::ImportValue: !Sub '${NetworkStackName}-AppSecurityGroupId'
   SourceInstance:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId:
-        Ref: LatestAmiId
+      ImageId: !Ref LatestAmiId
       InstanceType: t3.micro
-      CreditSpecification:
-        CPUCredits: standard
+      CreditSpecification: {CPUCredits: standard}
       KeyName:
-        Fn::ImportValue:
-          Fn::Sub: ${ServicesStackName}-ProbeKeyName
-      PropagateTagsToVolumeOnCreation: true
-      NetworkInterfaces:
-      - DeviceIndex: '0'
-        AssociatePublicIpAddress: false
-        DeleteOnTermination: true
-        SubnetId:
-          Ref: SourceSubnet
-        GroupSet:
-        - Ref: SourceSecurityGroup
+        Fn::ImportValue: !Sub '${ServicesStackName}-ProbeKeyName'
+      SubnetId: !Ref SourceSubnet
+      PrivateIpAddress: !FindInMap [ScenarioSettings, !Ref Scenario, SourceIp]
+      SecurityGroupIds: [!Ref SourceSecurityGroup]
       BlockDeviceMappings:
-      - DeviceName: /dev/xvda
-        Ebs:
-          VolumeSize: 8
-          VolumeType: gp3
-          DeleteOnTermination: true
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 8, VolumeType: gp3, DeleteOnTermination: true}
       Tags:
-      - Key: Name
-        Value:
-          Fn::FindInMap:
-          - ScenarioSettings
-          - Ref: Scenario
-          - SourceName
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
-      - Key: CloudLinkRole
-        Value: Probe
+        - {Key: Name, Value: !FindInMap [ScenarioSettings, !Ref Scenario, SourceName]}
+        - {Key: Project, Value: CloudLink}
+        - {Key: CloudLinkRole, Value: Probe}
       UserData:
         Fn::Base64: |
           #!/bin/bash
-          set -euxo pipefail
+          set -eu
           mkdir -p /opt/cloudlink
           printf 'CloudLink probe\n' > /opt/cloudlink/health
           cat > /etc/systemd/system/cloudlink-health.service <<'UNIT'
           [Unit]
           Description=CloudLink test HTTP endpoint
           After=network-online.target
-          Wants=network-online.target
           [Service]
-          Type=simple
           User=ec2-user
           ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /opt/cloudlink
           Restart=always
-          RestartSec=2
           [Install]
           WantedBy=multi-user.target
           UNIT
           systemctl daemon-reload
           systemctl enable --now cloudlink-health.service
+
   DestinationSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId:
-        Ref: DestinationVpc
-      CidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - DestinationSubnetCidr
-      AvailabilityZone:
-        Ref: AvailabilityZone
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-DemoVpcB'
+      CidrBlock: !FindInMap [ScenarioSettings, !Ref Scenario, DestinationSubnet]
+      AvailabilityZone: !Ref AvailabilityZone
       MapPublicIpOnLaunch: false
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Destination-Subnet
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-Destination-Subnet'}]
   DestinationRoutes:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId:
-        Ref: DestinationVpc
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Destination-Routes
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-DemoVpcB'
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-Destination-Routes'}]
   DestinationAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId:
-        Ref: DestinationSubnet
-      RouteTableId:
-        Ref: DestinationRoutes
+      SubnetId: !Ref DestinationSubnet
+      RouteTableId: !Ref DestinationRoutes
   DestinationManagementReturn:
     Type: AWS::EC2::Route
     Properties:
-      RouteTableId:
-        Ref: DestinationRoutes
+      RouteTableId: !Ref DestinationRoutes
       DestinationCidrBlock: 10.20.0.0/16
       VpcPeeringConnectionId:
-        Ref: DestinationManagementPeering
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-WebPeeringB'
   DestinationSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      VpcId:
-        Ref: DestinationVpc
       GroupDescription: CloudLink scenario destination probe
+      VpcId:
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-DemoVpcB'
       SecurityGroupIngress:
-      - IpProtocol: icmp
-        FromPort: -1
-        ToPort: -1
-        CidrIp:
-          Fn::FindInMap:
-          - ScenarioSettings
-          - Ref: Scenario
-          - SourceSubnetCidr
-        Description: Ping from the other probe subnet
+        - {IpProtocol: icmp, FromPort: -1, ToPort: -1, CidrIp: !FindInMap [ScenarioSettings, !Ref Scenario, SourceSubnet]}
       SecurityGroupEgress:
-      - IpProtocol: '-1'
-        CidrIp: 0.0.0.0/0
-        Description: Allow outbound; private subnets have no internet route
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Destination-SG
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-Destination-SG'}]
   DestinationTcp8080:
     Type: AWS::EC2::SecurityGroupIngress
     Condition: AllowDestination8080
     Properties:
-      GroupId:
-        Ref: DestinationSecurityGroup
+      GroupId: !Ref DestinationSecurityGroup
       IpProtocol: tcp
       FromPort: 8080
       ToPort: 8080
-      CidrIp:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - SourceSubnetCidr
-      Description: Test service from the other probe subnet
+      CidrIp: !FindInMap [ScenarioSettings, !Ref Scenario, SourceSubnet]
   DestinationManagementSsh:
     Type: AWS::EC2::SecurityGroupIngress
-    DependsOn: DestinationManagementPeering
     Properties:
-      GroupId:
-        Ref: DestinationSecurityGroup
+      GroupId: !Ref DestinationSecurityGroup
       IpProtocol: tcp
       FromPort: 22
       ToPort: 22
       SourceSecurityGroupId:
-        Fn::ImportValue:
-          Fn::Sub: ${NetworkStackName}-AppSecurityGroupId
-      Description: Web VPC management only; probe-to-probe SSH stays blocked
+        Fn::ImportValue: !Sub '${NetworkStackName}-AppSecurityGroupId'
   DestinationInstance:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId:
-        Ref: LatestAmiId
+      ImageId: !Ref LatestAmiId
       InstanceType: t3.micro
-      CreditSpecification:
-        CPUCredits: standard
+      CreditSpecification: {CPUCredits: standard}
       KeyName:
-        Fn::ImportValue:
-          Fn::Sub: ${ServicesStackName}-ProbeKeyName
-      PropagateTagsToVolumeOnCreation: true
-      NetworkInterfaces:
-      - DeviceIndex: '0'
-        AssociatePublicIpAddress: false
-        DeleteOnTermination: true
-        SubnetId:
-          Ref: DestinationSubnet
-        GroupSet:
-        - Ref: DestinationSecurityGroup
+        Fn::ImportValue: !Sub '${ServicesStackName}-ProbeKeyName'
+      SubnetId: !Ref DestinationSubnet
+      PrivateIpAddress: !FindInMap [ScenarioSettings, !Ref Scenario, DestinationIp]
+      SecurityGroupIds: [!Ref DestinationSecurityGroup]
       BlockDeviceMappings:
-      - DeviceName: /dev/xvda
-        Ebs:
-          VolumeSize: 8
-          VolumeType: gp3
-          DeleteOnTermination: true
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 8, VolumeType: gp3, DeleteOnTermination: true}
       Tags:
-      - Key: Name
-        Value:
-          Fn::FindInMap:
-          - ScenarioSettings
-          - Ref: Scenario
-          - DestinationName
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
-      - Key: CloudLinkRole
-        Value: Probe
+        - {Key: Name, Value: !FindInMap [ScenarioSettings, !Ref Scenario, DestinationName]}
+        - {Key: Project, Value: CloudLink}
+        - {Key: CloudLinkRole, Value: Probe}
       UserData:
         Fn::Base64: |
           #!/bin/bash
-          set -euxo pipefail
+          set -eu
           mkdir -p /opt/cloudlink
           printf 'CloudLink probe\n' > /opt/cloudlink/health
           cat > /etc/systemd/system/cloudlink-health.service <<'UNIT'
           [Unit]
           Description=CloudLink test HTTP endpoint
           After=network-online.target
-          Wants=network-online.target
           [Service]
-          Type=simple
           User=ec2-user
           ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /opt/cloudlink
           Restart=always
-          RestartSec=2
           [Install]
           WantedBy=multi-user.target
           UNIT
           systemctl daemon-reload
           systemctl enable --now cloudlink-health.service
-  DataPeering:
-    Type: AWS::EC2::VPCPeeringConnection
-    Properties:
-      VpcId:
-        Ref: SourceVpc
-      PeerVpcId:
-        Ref: DestinationVpc
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Probe-Peering
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
+
+  # Scope each test route to the opposite subnet for this case.
   ForwardRoute:
     Type: AWS::EC2::Route
     Condition: HasForwardRoute
     Properties:
-      RouteTableId:
-        Ref: SourceRoutes
-      DestinationCidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - DestinationVpcCidr
+      RouteTableId: !Ref SourceRoutes
+      DestinationCidrBlock: !FindInMap [ScenarioSettings, !Ref Scenario, DestinationSubnet]
       VpcPeeringConnectionId:
-        Ref: DataPeering
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-DemoPeering'
   ReturnRoute:
     Type: AWS::EC2::Route
     Condition: HasReturnRoute
     Properties:
-      RouteTableId:
-        Ref: DestinationRoutes
-      DestinationCidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - SourceVpcCidr
+      RouteTableId: !Ref DestinationRoutes
+      DestinationCidrBlock: !FindInMap [ScenarioSettings, !Ref Scenario, SourceSubnet]
       VpcPeeringConnectionId:
-        Ref: DataPeering
-  # Correct peer route remains in SourceRoutes; this table has management routes only.
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-DemoPeering'
+  # The correct test route remains in SourceRoutes. The wrong table keeps SSH reachable.
   WrongSourceRoutes:
     Type: AWS::EC2::RouteTable
     Condition: WrongAssociation
     Properties:
       VpcId:
-        Ref: SourceVpc
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Wrong-Source-Routes
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-DemoVpcA'
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-Wrong-Source-Routes'}]
   WrongSourceManagementReturn:
     Type: AWS::EC2::Route
     Condition: WrongAssociation
     Properties:
-      RouteTableId:
-        Ref: WrongSourceRoutes
+      RouteTableId: !Ref WrongSourceRoutes
       DestinationCidrBlock: 10.20.0.0/16
       VpcPeeringConnectionId:
-        Ref: SourceManagementPeering
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-WebPeeringA'
+
   DestinationAcl:
     Type: AWS::EC2::NetworkAcl
     Condition: UseDestinationAcl
     Properties:
       VpcId:
-        Ref: DestinationVpc
-      Tags:
-      - Key: Name
-        Value:
-          Fn::Sub: ${AWS::StackName}-Destination-ACL
-      - Key: Project
-        Value: CloudLink
-      - Key: Scenario
-        Value:
-          Ref: Scenario
+        Fn::ImportValue: !Sub '${DemoNetworkStackName}-DemoVpcB'
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-Destination-ACL'}]
   DestinationAclAssociation:
     Type: AWS::EC2::SubnetNetworkAclAssociation
     Condition: UseDestinationAcl
+    DependsOn: [DenyScenarioTcp, AllowAclInbound, AllowAclOutbound]
     Properties:
-      SubnetId:
-        Ref: DestinationSubnet
-      NetworkAclId:
-        Ref: DestinationAcl
-  # Block TCP replies to the source subnet, without blocking replies to the Web VPC.
-  DenyTcpReply:
+      SubnetId: !Ref DestinationSubnet
+      NetworkAclId: !Ref DestinationAcl
+  DenyScenarioTcp:
     Type: AWS::EC2::NetworkAclEntry
     Condition: UseDestinationAcl
     Properties:
-      NetworkAclId:
-        Ref: DestinationAcl
+      NetworkAclId: !Ref DestinationAcl
       RuleNumber: 100
       Protocol: 6
       RuleAction: deny
       Egress: true
-      CidrBlock:
-        Fn::FindInMap:
-        - ScenarioSettings
-        - Ref: Scenario
-        - SourceSubnetCidr
-      PortRange:
-        From: 1024
-        To: 65535
+      CidrBlock: !FindInMap [ScenarioSettings, !Ref Scenario, SourceSubnet]
+      PortRange: {From: 1024, To: 65535}
   AllowAclInbound:
     Type: AWS::EC2::NetworkAclEntry
     Condition: UseDestinationAcl
     Properties:
-      NetworkAclId:
-        Ref: DestinationAcl
+      NetworkAclId: !Ref DestinationAcl
       RuleNumber: 200
       Protocol: -1
       RuleAction: allow
@@ -697,56 +328,19 @@ Resources:
     Type: AWS::EC2::NetworkAclEntry
     Condition: UseDestinationAcl
     Properties:
-      NetworkAclId:
-        Ref: DestinationAcl
+      NetworkAclId: !Ref DestinationAcl
       RuleNumber: 200
       Protocol: -1
       RuleAction: allow
       Egress: true
       CidrBlock: 0.0.0.0/0
+
 Outputs:
-  Scenario:
-    Value:
-      Ref: Scenario
   SourceName:
-    Value:
-      Fn::FindInMap:
-      - ScenarioSettings
-      - Ref: Scenario
-      - SourceName
-  SourceInstanceId:
-    Value:
-      Ref: SourceInstance
+    Value: !FindInMap [ScenarioSettings, !Ref Scenario, SourceName]
   SourcePrivateIp:
-    Value:
-      Fn::GetAtt:
-      - SourceInstance
-      - PrivateIp
+    Value: !GetAtt SourceInstance.PrivateIp
   DestinationName:
-    Value:
-      Fn::FindInMap:
-      - ScenarioSettings
-      - Ref: Scenario
-      - DestinationName
-  DestinationInstanceId:
-    Value:
-      Ref: DestinationInstance
+    Value: !FindInMap [ScenarioSettings, !Ref Scenario, DestinationName]
   DestinationPrivateIp:
-    Value:
-      Fn::GetAtt:
-      - DestinationInstance
-      - PrivateIp
-  ExpectedPing:
-    Description: Source to destination / destination to source
-    Value:
-      Fn::FindInMap:
-      - ScenarioSettings
-      - Ref: Scenario
-      - ExpectedPing
-  ExpectedTcp8080:
-    Description: Source to destination / destination to source
-    Value:
-      Fn::FindInMap:
-      - ScenarioSettings
-      - Ref: Scenario
-      - ExpectedTcp8080
+    Value: !GetAtt DestinationInstance.PrivateIp
