@@ -23,12 +23,12 @@ class JobStore:
         self.queue = session.client("sqs")
         self.queue_url = queue_url
 
-    def submit(self, source: Any, destination: Any, **request: Any) -> dict[str, Any]:
+    def submit(self, source: Any, destination: Any, *, history_owner: str, **request: Any) -> dict[str, Any]:
         now = int(time.time())
         job = {
             "id": str(uuid.uuid4()), "status": "queued",
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "history_partition": "tests", "expires_at": now + 7 * 86400,
+            "history_partition": history_owner, "expires_at": now + 7 * 86400,
             "deadline": now + 900,
             "source_id": source.instance_id, "source_name": source.name,
             "destination_id": destination.instance_id, "destination_name": destination.name,
@@ -114,10 +114,10 @@ class JobStore:
             "error": error,
         }
 
-    def recent(self, limit: int = 20) -> list[dict[str, Any]]:
+    def recent(self, history_owner: str, limit: int = 20) -> list[dict[str, Any]]:
         response = self.table.query(
             IndexName="history", KeyConditionExpression="history_partition = :p",
-            ExpressionAttributeValues={":p": "tests"}, ScanIndexForward=False,
+            ExpressionAttributeValues={":p": history_owner}, ScanIndexForward=False,
             Limit=min(max(limit, 1), 100),
         )
         # TTL cleanup is asynchronous; don't display expired items while it catches up.

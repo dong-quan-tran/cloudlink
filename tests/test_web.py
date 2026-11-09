@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from cloudlink.jobs import JobStore
 from cloudlink.probe import Node
 from cloudlink.web import create_app
 from cloudlink.worker import process_message
@@ -77,6 +78,11 @@ class WebTests(unittest.TestCase):
         self.assertEqual(probe.call_args.kwargs["test_type"], "https")
         self.assertIsNone(probe.call_args.kwargs["port"])
         self.assertEqual(len(self.client.get("/api/history").json["tests"]), 1)
+        other = self.app.test_client()
+        other.get("/")
+        self.assertEqual(other.get("/api/history").json["tests"], [])
+        self.client.get("/")
+        self.assertEqual(len(self.client.get("/api/history").json["tests"]), 1)
 
     @patch("cloudlink.web.discover_nodes", return_value=NODES)
     def test_rejects_invalid_mode_and_port(self, _discover):
@@ -118,21 +124,38 @@ class WebTests(unittest.TestCase):
     def test_queued_submission_works_across_app_replicas(self, _discover, probe):
         key = Path(self.temp.name) / "shared-key"
         key.write_text("local fixture only")
-        jobs = MagicMock()
-        job_id = "9d3276f0-fd3c-4377-aa6d-72f263f75561"
-        jobs.submit.return_value = {"id": job_id, "status": "queued"}
-        jobs.get.return_value = {"id": job_id}
-        jobs.view.return_value = {"id": job_id, "status": "completed", "summary": "ICMP reply received"}
+        storage = MagicMock()
+        jobs = JobStore(storage, "tests", "queue")
+        items = {}
+        jobs.table.put_item.side_effect = lambda Item, **_: items.update({Item["id"]: Item})
+        jobs.table.get_item.side_effect = lambda Key, **_: {"Item": items[Key["id"]]} if Key["id"] in items else {}
+        jobs.table.query.side_effect = lambda ExpressionAttributeValues, **_: {
+            "Items": [job for job in items.values() if job["history_partition"] == ExpressionAttributeValues[":p"]],
+        }
         with patch.dict(os.environ, {"CLOUDLINK_KEY_PATH": str(key)}):
             first = create_app(FakeSession(), job_store=jobs).test_client()
-            second = create_app(FakeSession(), job_store=jobs).test_client()
+            replica = create_app(FakeSession(), job_store=jobs)
+            second = replica.test_client()
+            other = replica.test_client()
         html = first.get("/").get_data(as_text=True)
         token = html.split('name="cloudlink-token" content="')[1].split('"')[0]
         second.set_cookie("session", first.get_cookie("session").value)
         response = second.post("/api/tests", json={"source_id": "i-a", "destination_id": "i-b"},
                                headers={"X-CloudLink-Token": token})
         self.assertEqual(response.status_code, 202)
-        self.assertEqual(first.get(response.json["status_url"]).json["status"], "completed")
+        result_url = response.json["status_url"]
+        job_id = response.json["id"]
+        self.assertEqual(first.get(result_url).json["status"], "queued")
+        items[job_id].update(status="completed", result_json=json.dumps({"summary": "ICMP reply received"}))
+        self.assertEqual(first.get(result_url).json["status"], "completed")
+        self.assertEqual(first.get("/api/history").json["tests"][0]["id"], job_id)
+        self.assertEqual(other.get(result_url).status_code, 404)
+        other.get("/")
+        self.assertEqual(other.get(result_url).status_code, 404)
+        self.assertEqual(other.get("/api/history").json["tests"], [])
+        items[job_id]["history_partition"] = "tests"  # Legacy, shared record.
+        self.assertEqual(first.get(result_url).status_code, 404)
+        self.assertEqual(first.get("/api/history").json["tests"], [])
         probe.assert_not_called()
 
     @patch("cloudlink.worker.run_probe")
