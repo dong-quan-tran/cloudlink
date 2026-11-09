@@ -1,0 +1,459 @@
+# Standalone template. Management routes are separate from scenario test routes.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudLink scenario: peering-working. Two private probes with separate app management paths.'
+Metadata:
+  Scenario: peering-working
+  Note: Deploy only one CloudLink scenario stack at a time.
+Parameters:
+  NetworkStackName:
+    Type: String
+    Default: cloudlink-network
+  ServicesStackName:
+    Type: String
+    Default: cloudlink-services
+  AppRouteTableAId:
+    Type: String
+    AllowedPattern: rtb-[0-9a-f]+
+    Description: Existing AppRoutesA physical ID; deploy.sh discovers it.
+  AppRouteTableBId:
+    Type: String
+    AllowedPattern: rtb-[0-9a-f]+
+    Description: Existing AppRoutesB physical ID; deploy.sh discovers it.
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+Resources:
+  VpcA:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.60.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-VPC-A
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  AppPeeringA:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: ${NetworkStackName}-AppVpcId
+      PeerVpcId:
+        Ref: VpcA
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-App-to-A
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  AppAToVpcA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: AppRouteTableAId
+      DestinationCidrBlock: 10.60.0.0/16
+      VpcPeeringConnectionId:
+        Ref: AppPeeringA
+  AppBToVpcA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: AppRouteTableBId
+      DestinationCidrBlock: 10.60.0.0/16
+      VpcPeeringConnectionId:
+        Ref: AppPeeringA
+  VpcB:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.61.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-VPC-B
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  AppPeeringB:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: ${NetworkStackName}-AppVpcId
+      PeerVpcId:
+        Ref: VpcB
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-App-to-B
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  AppAToVpcB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: AppRouteTableAId
+      DestinationCidrBlock: 10.61.0.0/16
+      VpcPeeringConnectionId:
+        Ref: AppPeeringB
+  AppBToVpcB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: AppRouteTableBId
+      DestinationCidrBlock: 10.61.0.0/16
+      VpcPeeringConnectionId:
+        Ref: AppPeeringB
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VpcA
+      CidrBlock: 10.60.1.0/24
+      AvailabilityZone:
+        Ref: AvailabilityZone
+      MapPublicIpOnLaunch: false
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-Subnet-A
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  RoutesA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VpcA
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-Routes-A
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  RouteAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: SubnetA
+      RouteTableId:
+        Ref: RoutesA
+  ManagementReturnA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: RoutesA
+      DestinationCidrBlock: 10.20.0.0/16
+      VpcPeeringConnectionId:
+        Ref: AppPeeringA
+  SecurityGroupA:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Ref: VpcA
+      GroupDescription: CloudLink peering-working probe A
+      SecurityGroupIngress:
+      - IpProtocol: icmp
+        FromPort: -1
+        ToPort: -1
+        CidrIp: 10.61.1.0/24
+        Description: Ping from the other scenario probe subnet
+      - IpProtocol: tcp
+        FromPort: 8080
+        ToPort: 8080
+        CidrIp: 10.61.1.0/24
+        Description: Test service from the other scenario probe subnet
+      SecurityGroupEgress:
+      - IpProtocol: '-1'
+        CidrIp: 0.0.0.0/0
+        Description: Allow requests and replies; no internet route exists
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-SG-A
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  ManagementSshA:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: AppPeeringA
+    Properties:
+      GroupId:
+        Ref: SecurityGroupA
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId:
+        Fn::ImportValue:
+          Fn::Sub: ${NetworkStackName}-AppSecurityGroupId
+      Description: CloudLink app management only; probe-to-probe SSH stays blocked
+  InstanceA:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId:
+        Ref: LatestAmiId
+      InstanceType: t3.micro
+      CreditSpecification:
+        CPUCredits: standard
+      KeyName:
+        Fn::ImportValue:
+          Fn::Sub: ${ServicesStackName}-ProbeKeyName
+      PropagateTagsToVolumeOnCreation: true
+      NetworkInterfaces:
+      - DeviceIndex: '0'
+        AssociatePublicIpAddress: false
+        DeleteOnTermination: true
+        SubnetId:
+          Ref: SubnetA
+        GroupSet:
+        - Ref: SecurityGroupA
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: 8
+          VolumeType: gp3
+          DeleteOnTermination: true
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-A
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+      - Key: CloudLinkRole
+        Value: Probe
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          mkdir -p /opt/cloudlink
+          printf 'CloudLink node A\n' > /opt/cloudlink/health
+          cat > /etc/systemd/system/cloudlink-health.service <<'UNIT'
+          [Unit]
+          Description=CloudLink test HTTP endpoint
+          After=network-online.target
+          Wants=network-online.target
+          [Service]
+          Type=simple
+          User=ec2-user
+          ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /opt/cloudlink
+          Restart=always
+          RestartSec=2
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now cloudlink-health.service
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VpcB
+      CidrBlock: 10.61.1.0/24
+      AvailabilityZone:
+        Ref: AvailabilityZone
+      MapPublicIpOnLaunch: false
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-Subnet-B
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  RoutesB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VpcB
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-Routes-B
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  RouteAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: SubnetB
+      RouteTableId:
+        Ref: RoutesB
+  ManagementReturnB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: RoutesB
+      DestinationCidrBlock: 10.20.0.0/16
+      VpcPeeringConnectionId:
+        Ref: AppPeeringB
+  SecurityGroupB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Ref: VpcB
+      GroupDescription: CloudLink peering-working probe B
+      SecurityGroupIngress:
+      - IpProtocol: icmp
+        FromPort: -1
+        ToPort: -1
+        CidrIp: 10.60.1.0/24
+        Description: Ping from the other scenario probe subnet
+      - IpProtocol: tcp
+        FromPort: 8080
+        ToPort: 8080
+        CidrIp: 10.60.1.0/24
+        Description: Test service from the other scenario probe subnet
+      SecurityGroupEgress:
+      - IpProtocol: '-1'
+        CidrIp: 0.0.0.0/0
+        Description: Allow requests and replies; no internet route exists
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-SG-B
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  ManagementSshB:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: AppPeeringB
+    Properties:
+      GroupId:
+        Ref: SecurityGroupB
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId:
+        Fn::ImportValue:
+          Fn::Sub: ${NetworkStackName}-AppSecurityGroupId
+      Description: CloudLink app management only; probe-to-probe SSH stays blocked
+  InstanceB:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId:
+        Ref: LatestAmiId
+      InstanceType: t3.micro
+      CreditSpecification:
+        CPUCredits: standard
+      KeyName:
+        Fn::ImportValue:
+          Fn::Sub: ${ServicesStackName}-ProbeKeyName
+      PropagateTagsToVolumeOnCreation: true
+      NetworkInterfaces:
+      - DeviceIndex: '0'
+        AssociatePublicIpAddress: false
+        DeleteOnTermination: true
+        SubnetId:
+          Ref: SubnetB
+        GroupSet:
+        - Ref: SecurityGroupB
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeSize: 8
+          VolumeType: gp3
+          DeleteOnTermination: true
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-B
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+      - Key: CloudLinkRole
+        Value: Probe
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          mkdir -p /opt/cloudlink
+          printf 'CloudLink node B\n' > /opt/cloudlink/health
+          cat > /etc/systemd/system/cloudlink-health.service <<'UNIT'
+          [Unit]
+          Description=CloudLink test HTTP endpoint
+          After=network-online.target
+          Wants=network-online.target
+          [Service]
+          Type=simple
+          User=ec2-user
+          ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /opt/cloudlink
+          Restart=always
+          RestartSec=2
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now cloudlink-health.service
+  DataPeering:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId:
+        Ref: VpcA
+      PeerVpcId:
+        Ref: VpcB
+      Tags:
+      - Key: Name
+        Value: CloudLink-peering-working-A-to-B
+      - Key: Project
+        Value: CloudLink
+      - Key: Scenario
+        Value: peering-working
+  ForwardRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: RoutesA
+      DestinationCidrBlock: 10.61.0.0/16
+      VpcPeeringConnectionId:
+        Ref: DataPeering
+  ReturnRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: RoutesB
+      DestinationCidrBlock: 10.60.0.0/16
+      VpcPeeringConnectionId:
+        Ref: DataPeering
+Outputs:
+  Scenario:
+    Value: peering-working
+  NodeAName:
+    Value: CloudLink-peering-working-A
+  NodeAInstanceId:
+    Value:
+      Ref: InstanceA
+  NodeAPrivateIp:
+    Value:
+      Fn::GetAtt:
+      - InstanceA
+      - PrivateIp
+  NodeBName:
+    Value: CloudLink-peering-working-B
+  NodeBInstanceId:
+    Value:
+      Ref: InstanceB
+  NodeBPrivateIp:
+    Value:
+      Fn::GetAtt:
+      - InstanceB
+      - PrivateIp
+  ManagementSsh:
+    Value: 'PASS: CloudLink app can SSH to A and B; probe-to-probe SSH is blocked.'
+  ExpectedPing:
+    Description: A to B / B to A, using private IPs
+    Value: PASS / PASS
+  ExpectedTcp8080:
+    Description: A to B / B to A, using private IPs
+    Value: PASS / PASS
