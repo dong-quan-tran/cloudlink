@@ -8,6 +8,7 @@ import os
 import signal
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from .jobs import JobStore, TERMINAL
@@ -17,7 +18,8 @@ from .probe import discover_nodes, run_probe
 logger = logging.getLogger(__name__)
 
 
-def log_completion(job_id: str, mode: str, test_type: str, result: dict[str, Any], started: float) -> None:
+def log_completion(job_id: str, mode: str, test_type: str, result: dict[str, Any],
+                   started: float, queue_wait_ms: int | None) -> None:
     if mode == "configuration":
         outcome = result["network_analysis"]["status"]
     else:
@@ -26,10 +28,13 @@ def log_completion(job_id: str, mode: str, test_type: str, result: dict[str, Any
             outcome = "probe_unavailable"
         else:
             outcome = "reachable" if check["ok"] else "unreachable"
+    duration_ms = round((time.monotonic() - started) * 1000)
     logger.info(json.dumps({
         "event": "diagnostic_completed", "job_id": job_id, "mode": mode,
         "test_type": test_type, "outcome": outcome,
-        "duration_ms": round((time.monotonic() - started) * 1000),
+        "duration_ms": duration_ms,
+        "queue_wait_ms": queue_wait_ms,
+        "total_ms": queue_wait_ms + duration_ms if queue_wait_ms is not None else None,
     }))
 
 
@@ -57,6 +62,13 @@ def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> N
     if not store.claim(job_id, owner):
         return  # Another worker has a live lease. Do not acknowledge its work.
     started = time.monotonic()
+    started_at = datetime.now(timezone.utc)
+    queue_wait_ms = None
+    try:
+        submitted_at = datetime.fromisoformat(job.get("created_at"))
+        queue_wait_ms = max(0, round((started_at - submitted_at).total_seconds() * 1000))
+    except (TypeError, ValueError):
+        pass  # Missing or invalid timing metadata must not stop a diagnostic.
     try:
         source_id, destination_id = job["source_id"], job["destination_id"]
         selected = discover_nodes(session.client("ec2"), instance_ids=(source_id, destination_id))
@@ -81,7 +93,7 @@ def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> N
             if not result["check"]["ok"]:
                 result["network_analysis"] = analyze_network(session, source, destination, **request)
         if store.complete(job_id, owner, result):
-            log_completion(job_id, mode, request["test_type"], result, started)
+            log_completion(job_id, mode, request["test_type"], result, started, queue_wait_ms)
             acknowledge()
     except Exception:
         log_execution_error(job_id, "worker_attempt_failed")

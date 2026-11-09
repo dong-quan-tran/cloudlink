@@ -3,6 +3,7 @@ import unittest
 import os
 import json
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -178,11 +179,17 @@ class WebTests(unittest.TestCase):
     def test_worker_saves_before_acknowledging(self, discover, probe, analysis):
         store = MagicMock()
         store.get.return_value = {"status": "queued", "deadline": int(time.time()) + 900,
+                                  "created_at": "2026-11-09T12:00:00+00:00",
                                   "source_id": "i-a", "destination_id": "i-b",
                                   "request": {"address_type": "private", "test_type": "tcp", "port": Decimal(8080)}}
         store.claim.return_value = True
         store.complete.return_value = True
-        with patch.dict(os.environ, {"CLOUDLINK_KEY_PATH": "/local-fixture"}), self.assertLogs("cloudlink.worker", level="INFO") as logs:
+        with (
+            patch.dict(os.environ, {"CLOUDLINK_KEY_PATH": "/local-fixture"}),
+            patch("cloudlink.worker.datetime", wraps=datetime) as clock,
+            self.assertLogs("cloudlink.worker", level="INFO") as logs,
+        ):
+            clock.now.return_value = datetime(2026, 11, 9, 12, 0, 2, tzinfo=timezone.utc)
             process_message(store, FakeSession(), {"Body": json.dumps({"id": "job-1"}), "ReceiptHandle": "receipt"})
         self.assertEqual(discover.call_args.kwargs["instance_ids"], ("i-a", "i-b"))
         event, = (json.loads(record.getMessage()) for record in logs.records)
@@ -190,6 +197,8 @@ class WebTests(unittest.TestCase):
         self.assertEqual(event["test_type"], "tcp")
         self.assertEqual(event["outcome"], "unreachable")
         self.assertGreaterEqual(event["duration_ms"], 0)
+        self.assertEqual(event["queue_wait_ms"], 2000)
+        self.assertEqual(event["total_ms"], 2000 + event["duration_ms"])
         store.complete.assert_called_once_with("job-1", store.claim.call_args.args[1], probe.return_value)
         self.assertEqual(store.complete.call_args.args[2]["network_analysis"], analysis.return_value)
         self.assertEqual(analysis.call_args.kwargs["port"], 8080)

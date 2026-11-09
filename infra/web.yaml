@@ -350,11 +350,11 @@ Resources:
                 "title": "Oldest waiting job (seconds)", "region": "${AWS::Region}", "period": 60, "stat": "Maximum",
                 "metrics": [["AWS/SQS", "ApproximateAgeOfOldestMessage", "QueueName", "${JobsQueueName}"]]
               }},
-              {"type": "log", "x": 0, "y": 12, "width": 14, "height": 6, "properties": {
+              {"type": "log", "x": 0, "y": 12, "width": 16, "height": 6, "properties": {
                 "title": "Completed diagnostics by mode, type and outcome", "region": "${AWS::Region}", "view": "table",
-                "query": "SOURCE '${AppLogGroup}' | filter event = 'diagnostic_completed' | stats count(*) as completed, pct(duration_ms, 95) as p95_ms by mode, test_type, outcome | sort completed desc"
+                "query": "SOURCE '${AppLogGroup}' | filter event = 'diagnostic_completed' | stats count(*) as completed, pct(queue_wait_ms, 95) as p95_wait_ms, pct(duration_ms, 95) as p95_run_ms, pct(total_ms, 95) as p95_total_ms by mode, test_type, outcome | sort completed desc"
               }},
-              {"type": "log", "x": 14, "y": 12, "width": 10, "height": 6, "properties": {
+              {"type": "log", "x": 16, "y": 12, "width": 8, "height": 6, "properties": {
                 "title": "Diagnostic execution errors", "region": "${AWS::Region}", "view": "table",
                 "query": "SOURCE '${AppLogGroup}' | filter event = 'diagnostic_execution_error' or outcome = 'probe_unavailable' | fields coalesce(reason, outcome) as error_kind | stats count(*) as events by error_kind | sort events desc"
               }}
