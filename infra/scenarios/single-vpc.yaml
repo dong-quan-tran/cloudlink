@@ -110,7 +110,7 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: !Ref LatestAmiId
-      InstanceType: t3.micro
+      InstanceType: t2.micro
       CreditSpecification: {CPUCredits: standard}
       KeyName:
         Fn::ImportValue: !Sub '${ServicesStackName}-ProbeKeyName'
@@ -204,7 +204,7 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: !Ref LatestAmiId
-      InstanceType: t3.micro
+      InstanceType: t2.micro
       CreditSpecification: {CPUCredits: standard}
       KeyName:
         Fn::ImportValue: !Sub '${ServicesStackName}-ProbeKeyName'
