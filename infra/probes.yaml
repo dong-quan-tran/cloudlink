@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudLink pair of private, same-VPC probe instances
+
+Parameters:
+  NetworkStackName:
+    Type: String
+    Default: cloudlink-network
+    Description: Name of the deployed CloudLink network stack
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  ServicesStackName:
+    Type: String
+    Default: cloudlink-services
+
+Resources:
+  InstanceA:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      CreditSpecification:
+        CPUCredits: standard
+      KeyName:
+        Fn::ImportValue: !Sub '${ServicesStackName}-ProbeKeyName'
+      PropagateTagsToVolumeOnCreation: true
+      SubnetId:
+        Fn::ImportValue:
+          Fn::Sub: '${NetworkStackName}-SubnetAId'
+      PrivateIpAddress: 10.10.1.10
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            Fn::Sub: '${NetworkStackName}-SecurityGroupAId'
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp3
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: CloudLink-Node-A
+        - Key: Project
+          Value: CloudLink
+        - Key: CloudLinkRole
+          Value: Probe
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          mkdir -p /opt/cloudlink
+          printf 'CloudLink node A\n' > /opt/cloudlink/health
+          cat > /etc/systemd/system/cloudlink-health.service <<'UNIT'
+          [Unit]
+          Description=CloudLink test HTTP endpoint
+          After=network-online.target
+          Wants=network-online.target
+          [Service]
+          Type=simple
+          User=ec2-user
+          ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /opt/cloudlink
+          Restart=always
+          RestartSec=2
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now cloudlink-health.service
+
+  InstanceB:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      CreditSpecification:
+        CPUCredits: standard
+      KeyName:
+        Fn::ImportValue: !Sub '${ServicesStackName}-ProbeKeyName'
+      PropagateTagsToVolumeOnCreation: true
+      SubnetId:
+        Fn::ImportValue:
+          Fn::Sub: '${NetworkStackName}-SubnetBId'
+      PrivateIpAddress: 10.10.2.10
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            Fn::Sub: '${NetworkStackName}-SecurityGroupBId'
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp3
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: CloudLink-Node-B
+        - Key: Project
+          Value: CloudLink
+        - Key: CloudLinkRole
+          Value: Probe
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          mkdir -p /opt/cloudlink
+          printf 'CloudLink node B\n' > /opt/cloudlink/health
+          cat > /etc/systemd/system/cloudlink-health.service <<'UNIT'
+          [Unit]
+          Description=CloudLink test HTTP endpoint
+          After=network-online.target
+          Wants=network-online.target
+          [Service]
+          Type=simple
+          User=ec2-user
+          ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /opt/cloudlink
+          Restart=always
+          RestartSec=2
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now cloudlink-health.service
+
+Outputs:
+  NodeAInstanceId:
+    Value: !Ref InstanceA
+  NodeBInstanceId:
+    Value: !Ref InstanceB
+  NodeAPrivateIp:
+    Value: !GetAtt InstanceA.PrivateIp
+  NodeBPrivateIp:
+    Value: !GetAtt InstanceB.PrivateIp
