@@ -149,9 +149,9 @@ Resources:
                 [Install]
                 WantedBy=multi-user.target
                 UNIT
-                cat > /etc/systemd/system/cloudlink-worker.service <<'UNIT'
+                cat > /etc/systemd/system/cloudlink-worker@.service <<'UNIT'
                 [Unit]
-                Description=CloudLink queued connectivity worker
+                Description=CloudLink queued connectivity worker %i
                 After=network-online.target
                 Wants=network-online.target
                 [Service]
@@ -184,12 +184,14 @@ Resources:
                 CWAGENT
                 nginx -t
                 systemctl daemon-reload
-                systemctl enable --now cloudlink cloudlink-worker nginx
+                systemctl enable --now cloudlink nginx cloudlink-worker@{1..3}.service
                 /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
                   -a fetch-config -m ec2 -s -c file:/etc/cloudlink/cloudwatch.json
                 for attempt in $(seq 1 30); do
                   if curl -fsS http://127.0.0.1/healthz && curl -fsS http://127.0.0.1/api/history; then
-                    systemctl is-active --quiet cloudlink-worker
+                    for worker in cloudlink-worker@{1..3}.service; do
+                      systemctl is-active --quiet "$worker"
+                    done
                     exit 0
                   fi
                   sleep 2
@@ -207,17 +209,19 @@ Resources:
     Type: AWS::AutoScaling::AutoScalingGroup
     DependsOn: Listener
     CreationPolicy:
-      ResourceSignal: {Count: 2, Timeout: PT20M}
+      ResourceSignal: {Count: 4, Timeout: PT20M}
     UpdatePolicy:
       AutoScalingRollingUpdate:
-        MinInstancesInService: 1
+        MinInstancesInService: 4
         MaxBatchSize: 1
         PauseTime: PT20M
         WaitOnResourceSignals: true
     Properties:
-      MinSize: '2'
-      MaxSize: '3'
-      DesiredCapacity: '2'
+      MinSize: '4'
+      MaxSize: '6'
+      DesiredCapacity: '4'
+      AvailabilityZoneDistribution:
+        CapacityDistributionStrategy: balanced-best-effort
       DefaultInstanceWarmup: 180
       MetricsCollection:
         - Granularity: 1Minute
@@ -255,7 +259,7 @@ Resources:
                       Value:
                         Fn::ImportValue: !Sub '${ServicesStackName}-QueueName'
                 Stat: Average
-            - Id: workers
+            - Id: instances
               ReturnData: false
               MetricStat:
                 Metric:
@@ -267,7 +271,8 @@ Resources:
                 Stat: Average
             - Id: jobs_per_worker
               ReturnData: true
-              Expression: 'IF(workers > 0, backlog / workers, backlog)'
+              # Each app instance starts three workers.
+              Expression: 'IF(instances > 0, backlog / (instances * 3), backlog)'
   WebDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
