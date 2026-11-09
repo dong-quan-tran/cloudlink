@@ -57,7 +57,7 @@ Resources:
     Properties:
       LaunchTemplateData:
         ImageId: !Ref LatestAmiId
-        InstanceType: t3.micro
+        InstanceType: t3.small
         CreditSpecification: {CpuCredits: standard}
         IamInstanceProfile:
           Name:
@@ -89,9 +89,11 @@ Resources:
                 set -euo pipefail
                 dnf install -y git nginx python3.11 python3.11-pip aws-cfn-bootstrap awscli-2 openssh-clients
                 trap '/opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AppAutoScalingGroup --region ${AWS::Region}' EXIT
+                dnf install -y amazon-cloudwatch-agent
                 useradd --system --create-home --home-dir /var/lib/cloudlink --shell /sbin/nologin cloudlink
                 install -d -m 0700 -o cloudlink -g cloudlink /var/lib/cloudlink/.ssh
                 install -d -m 0755 /etc/cloudlink /opt/cloudlink
+                install -d -m 0750 -o cloudlink -g nginx /var/log/cloudlink
                 install -m 0600 -o cloudlink -g cloudlink /dev/null /var/lib/cloudlink/.ssh/id_ed25519
                 aws ssm get-parameter --region '${AWS::Region}' --name '${KeyParameter}' --with-decryption --query Parameter.Value --output text > /var/lib/cloudlink/.ssh/id_ed25519
                 git clone --depth 1 --branch '${RepositoryBranch}' https://github.com/dong-quan-tran/cloudlink.git /opt/cloudlink/app
@@ -140,14 +142,16 @@ Resources:
                 RuntimeDirectory=cloudlink
                 RuntimeDirectoryMode=0750
                 ExecStart=/opt/cloudlink/venv/bin/gunicorn --workers 2 --bind unix:/run/cloudlink/cloudlink.sock --umask 007 cloudlink.web:create_app()
+                StandardOutput=append:/var/log/cloudlink/web.log
+                StandardError=inherit
                 Restart=always
                 RestartSec=3
                 [Install]
                 WantedBy=multi-user.target
                 UNIT
-                cat > /etc/systemd/system/cloudlink-worker.service <<'UNIT'
+                cat > /etc/systemd/system/cloudlink-worker@.service <<'UNIT'
                 [Unit]
-                Description=CloudLink queued connectivity worker
+                Description=CloudLink queued connectivity worker %i
                 After=network-online.target
                 Wants=network-online.target
                 [Service]
@@ -156,18 +160,38 @@ Resources:
                 WorkingDirectory=/opt/cloudlink/app
                 EnvironmentFile=/etc/cloudlink/runtime.env
                 ExecStart=/opt/cloudlink/venv/bin/python -m cloudlink.worker
+                StandardOutput=append:/var/log/cloudlink/worker.log
+                StandardError=inherit
                 Restart=always
                 RestartSec=3
                 TimeoutStopSec=30
                 [Install]
                 WantedBy=multi-user.target
                 UNIT
+                cat > /etc/cloudlink/cloudwatch.json <<'CWAGENT'
+                {
+                  "logs": {
+                    "logs_collected": {
+                      "files": {
+                        "collect_list": [
+                          {"file_path": "/var/log/cloudlink/web.log", "log_group_name": "${AppLogGroup}", "log_stream_name": "{instance_id}/web"},
+                          {"file_path": "/var/log/cloudlink/worker.log", "log_group_name": "${AppLogGroup}", "log_stream_name": "{instance_id}/worker"}
+                        ]
+                      }
+                    }
+                  }
+                }
+                CWAGENT
                 nginx -t
                 systemctl daemon-reload
-                systemctl enable --now cloudlink cloudlink-worker nginx
+                systemctl enable --now cloudlink nginx cloudlink-worker@{1..3}.service
+                /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+                  -a fetch-config -m ec2 -s -c file:/etc/cloudlink/cloudwatch.json
                 for attempt in $(seq 1 30); do
                   if curl -fsS http://127.0.0.1/healthz && curl -fsS http://127.0.0.1/api/history; then
-                    systemctl is-active --quiet cloudlink-worker
+                    for worker in cloudlink-worker@{1..3}.service; do
+                      systemctl is-active --quiet "$worker"
+                    done
                     exit 0
                   fi
                   sleep 2
@@ -179,21 +203,25 @@ Resources:
                   Fn::ImportValue: !Sub '${ServicesStackName}-TableName'
                 QueueUrl:
                   Fn::ImportValue: !Sub '${ServicesStackName}-QueueUrl'
+                AppLogGroup:
+                  Fn::ImportValue: !Sub '${ServicesStackName}-AppLogGroupName'
   AppAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     DependsOn: Listener
     CreationPolicy:
-      ResourceSignal: {Count: 2, Timeout: PT20M}
+      ResourceSignal: {Count: 4, Timeout: PT20M}
     UpdatePolicy:
       AutoScalingRollingUpdate:
-        MinInstancesInService: 1
+        MinInstancesInService: 4
         MaxBatchSize: 1
         PauseTime: PT20M
         WaitOnResourceSignals: true
     Properties:
-      MinSize: '2'
-      MaxSize: '3'
-      DesiredCapacity: '2'
+      MinSize: '4'
+      MaxSize: '6'
+      DesiredCapacity: '4'
+      AvailabilityZoneDistribution:
+        CapacityDistributionStrategy: balanced-best-effort
       DefaultInstanceWarmup: 180
       MetricsCollection:
         - Granularity: 1Minute
@@ -231,7 +259,7 @@ Resources:
                       Value:
                         Fn::ImportValue: !Sub '${ServicesStackName}-QueueName'
                 Stat: Average
-            - Id: workers
+            - Id: instances
               ReturnData: false
               MetricStat:
                 Metric:
@@ -243,7 +271,8 @@ Resources:
                 Stat: Average
             - Id: jobs_per_worker
               ReturnData: true
-              Expression: 'IF(workers > 0, backlog / workers, backlog)'
+              # Each app instance starts three workers.
+              Expression: 'IF(instances > 0, backlog / (instances * 3), backlog)'
   WebDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -274,6 +303,70 @@ Resources:
           - {ErrorCode: 503, ErrorCachingMinTTL: 0}
           - {ErrorCode: 504, ErrorCachingMinTTL: 0}
 
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${AWS::StackName}-monitoring'
+      DashboardBody: !Sub
+        - |
+          {
+            "start": "-PT3H",
+            "widgets": [
+              {"type": "metric", "x": 0, "y": 0, "width": 8, "height": 6, "properties": {
+                "title": "CloudFront viewer requests", "region": "us-east-1", "period": 60, "stat": "Sum",
+                "metrics": [["AWS/CloudFront", "Requests", "DistributionId", "${WebDistribution}", "Region", "Global"]]
+              }},
+              {"type": "metric", "x": 8, "y": 0, "width": 8, "height": 6, "properties": {
+                "title": "CloudFront error rates (%)", "region": "us-east-1", "period": 60, "stat": "Average",
+                "metrics": [
+                  ["AWS/CloudFront", "4xxErrorRate", "DistributionId", "${WebDistribution}", "Region", "Global"],
+                  ["AWS/CloudFront", "5xxErrorRate", "DistributionId", "${WebDistribution}", "Region", "Global"]
+                ]
+              }},
+              {"type": "metric", "x": 16, "y": 0, "width": 8, "height": 6, "properties": {
+                "title": "Load balancer requests and 5xx errors", "region": "${AWS::Region}", "period": 60, "stat": "Sum",
+                "metrics": [
+                  ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${LoadBalancer.LoadBalancerFullName}"],
+                  ["AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count", "LoadBalancer", "${LoadBalancer.LoadBalancerFullName}", {"label": "Load balancer 5xx", "yAxis": "right"}],
+                  ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", "${LoadBalancer.LoadBalancerFullName}", {"label": "App server 5xx", "yAxis": "right"}]
+                ]
+              }},
+              {"type": "metric", "x": 0, "y": 6, "width": 8, "height": 6, "properties": {
+                "title": "Healthy app instances and response time", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  ["AWS/ApplicationELB", "HealthyHostCount", "LoadBalancer", "${LoadBalancer.LoadBalancerFullName}", "TargetGroup", "${TargetGroup.TargetGroupFullName}", {"stat": "Minimum"}],
+                  ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${LoadBalancer.LoadBalancerFullName}", "TargetGroup", "${TargetGroup.TargetGroupFullName}", {"stat": "p95", "label": "p95 response (seconds)", "yAxis": "right"}]
+                ]
+              }},
+              {"type": "metric", "x": 8, "y": 6, "width": 8, "height": 6, "properties": {
+                "title": "Diagnostic queue and dead-letter queue", "region": "${AWS::Region}", "period": 60, "stat": "Maximum",
+                "metrics": [
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${JobsQueueName}", {"label": "Waiting"}],
+                  ["AWS/SQS", "ApproximateNumberOfMessagesNotVisible", "QueueName", "${JobsQueueName}", {"label": "In progress"}],
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${DeadLetterQueueName}", {"label": "Dead-letter queue"}]
+                ]
+              }},
+              {"type": "metric", "x": 16, "y": 6, "width": 8, "height": 6, "properties": {
+                "title": "Oldest waiting job (seconds)", "region": "${AWS::Region}", "period": 60, "stat": "Maximum",
+                "metrics": [["AWS/SQS", "ApproximateAgeOfOldestMessage", "QueueName", "${JobsQueueName}"]]
+              }},
+              {"type": "log", "x": 0, "y": 12, "width": 16, "height": 6, "properties": {
+                "title": "Completed diagnostics by mode, type and outcome", "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '${AppLogGroup}' | filter event = 'diagnostic_completed' | stats count(*) as completed, pct(queue_wait_ms, 95) as p95_wait_ms, pct(duration_ms, 95) as p95_run_ms, pct(total_ms, 95) as p95_total_ms by mode, test_type, outcome | sort completed desc"
+              }},
+              {"type": "log", "x": 16, "y": 12, "width": 8, "height": 6, "properties": {
+                "title": "Diagnostic execution errors", "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '${AppLogGroup}' | filter event = 'diagnostic_execution_error' or outcome = 'probe_unavailable' | fields coalesce(reason, outcome) as error_kind | stats count(*) as events by error_kind | sort events desc"
+              }}
+            ]
+          }
+        - AppLogGroup:
+            Fn::ImportValue: !Sub '${ServicesStackName}-AppLogGroupName'
+          JobsQueueName:
+            Fn::ImportValue: !Sub '${ServicesStackName}-QueueName'
+          DeadLetterQueueName:
+            Fn::ImportValue: !Sub '${ServicesStackName}-DeadLetterQueueName'
+
 Outputs:
   WebUrl:
     Value: !Sub 'https://${WebDistribution.DomainName}/'
@@ -281,3 +374,5 @@ Outputs:
     Value: !Ref AppAutoScalingGroup
   TargetGroupArn:
     Value: !Ref TargetGroup
+  MonitoringDashboardName:
+    Value: !Ref MonitoringDashboard

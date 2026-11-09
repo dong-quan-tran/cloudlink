@@ -40,6 +40,17 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(node.private_ip, "10.10.1.5")
         self.assertEqual(node.security_group_ids, ("sg-123",))
 
+    def test_discovery_filters_selected_ids_and_requires_running_probe_tags(self):
+        ec2 = MagicMock()
+        paginate = ec2.get_paginator.return_value.paginate
+        paginate.return_value = [{"Reservations": []}]
+        self.assertEqual(discover_nodes(ec2, instance_ids=("i-source", "i-destination")), [])
+        filters = {item["Name"]: item["Values"] for item in paginate.call_args.kwargs["Filters"]}
+        self.assertEqual(filters, {
+            "instance-state-name": ["running"], "tag:Project": ["CloudLink"],
+            "tag:CloudLinkRole": ["Probe"], "instance-id": ["i-source", "i-destination"],
+        })
+
     def test_http_response_is_success_even_for_error_status(self):
         summary, advice = summarize("http", {"ok": True, "detail": "HTTP 404 Not Found", "status_code": 404}, 80)
         self.assertEqual(summary, "HTTP responded")

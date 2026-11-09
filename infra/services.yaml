@@ -45,6 +45,12 @@ Resources:
       KeyName: !Sub '${AWS::StackName}-probe-key'
       KeyType: ed25519
       Tags: [{Key: Project, Value: CloudLink}]
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/cloudlink/${AWS::StackName}/app'
+      RetentionInDays: 7
+      Tags: [{Key: Project, Value: CloudLink}]
   AppRole:
     Type: AWS::IAM::Role
     Properties:
@@ -76,6 +82,12 @@ Resources:
                 Action: [sqs:SendMessage, sqs:ReceiveMessage, sqs:DeleteMessage, sqs:ChangeMessageVisibility, sqs:GetQueueAttributes]
                 Resource: !GetAtt JobsQueue.Arn
               - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:DescribeLogStreams, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt AppLogGroup.Arn
+              - Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: '*'
+              - Effect: Allow
                 Action: ssm:GetParameter
                 Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ec2/keypair/${ProbeKey.KeyPairId}'
               - Effect: Allow
@@ -105,6 +117,12 @@ Outputs:
     Export: {Name: !Sub '${AWS::StackName}-QueueName'}
   DeadLetterQueueUrl:
     Value: !Ref DeadLetterQueue
+  DeadLetterQueueName:
+    Value: !GetAtt DeadLetterQueue.QueueName
+    Export: {Name: !Sub '${AWS::StackName}-DeadLetterQueueName'}
+  AppLogGroupName:
+    Value: !Ref AppLogGroup
+    Export: {Name: !Sub '${AWS::StackName}-AppLogGroupName'}
   ProbeKeyName:
     Value: !Ref ProbeKey
     Export: {Name: !Sub '${AWS::StackName}-ProbeKeyName'}
