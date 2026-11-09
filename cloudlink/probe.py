@@ -80,13 +80,17 @@ class Node:
         return asdict(self)
 
 
-def discover_nodes(ec2_client: Any) -> list[Node]:
-    """List running CloudLink probe nodes, not unrelated sandbox instances."""
+def discover_nodes(ec2_client: Any, *, instance_ids: tuple[str, ...] | None = None) -> list[Node]:
+    """List running CloudLink probes, optionally restricted to specific IDs."""
     filters = [
         {"Name": "instance-state-name", "Values": ["running"]},
         {"Name": "tag:Project", "Values": ["CloudLink"]},
         {"Name": "tag:CloudLinkRole", "Values": ["Probe"]},
     ]
+    if instance_ids is not None:
+        if not instance_ids:
+            return []
+        filters.append({"Name": "instance-id", "Values": list(instance_ids)})
     nodes: list[Node] = []
     paginator = ec2_client.get_paginator("describe_instances")
     for page in paginator.paginate(Filters=filters):

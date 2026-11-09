@@ -58,8 +58,10 @@ def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> N
         return  # Another worker has a live lease. Do not acknowledge its work.
     started = time.monotonic()
     try:
-        nodes = {node.instance_id: node for node in discover_nodes(session.client("ec2"))}
-        source, destination = nodes.get(job["source_id"]), nodes.get(job["destination_id"])
+        source_id, destination_id = job["source_id"], job["destination_id"]
+        selected = discover_nodes(session.client("ec2"), instance_ids=(source_id, destination_id))
+        nodes = {node.instance_id: node for node in selected}
+        source, destination = nodes.get(source_id), nodes.get(destination_id)
         if source is None or destination is None:
             store.fail(job_id, "One of the selected lab instances is no longer running.", owner=owner)
             log_execution_error(job_id, "instance_unavailable")

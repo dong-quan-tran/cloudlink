@@ -175,7 +175,7 @@ class WebTests(unittest.TestCase):
     @patch("cloudlink.worker.analyze_network", return_value={"status": "pass", "checks": []})
     @patch("cloudlink.worker.run_probe", return_value={"check": {"ok": False}})
     @patch("cloudlink.worker.discover_nodes", return_value=NODES)
-    def test_worker_saves_before_acknowledging(self, _discover, probe, analysis):
+    def test_worker_saves_before_acknowledging(self, discover, probe, analysis):
         store = MagicMock()
         store.get.return_value = {"status": "queued", "deadline": int(time.time()) + 900,
                                   "source_id": "i-a", "destination_id": "i-b",
@@ -184,6 +184,7 @@ class WebTests(unittest.TestCase):
         store.complete.return_value = True
         with patch.dict(os.environ, {"CLOUDLINK_KEY_PATH": "/local-fixture"}), self.assertLogs("cloudlink.worker", level="INFO") as logs:
             process_message(store, FakeSession(), {"Body": json.dumps({"id": "job-1"}), "ReceiptHandle": "receipt"})
+        self.assertEqual(discover.call_args.kwargs["instance_ids"], ("i-a", "i-b"))
         event, = (json.loads(record.getMessage()) for record in logs.records)
         self.assertEqual(event["event"], "diagnostic_completed")
         self.assertEqual(event["test_type"], "tcp")
