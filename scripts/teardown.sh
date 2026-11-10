@@ -12,8 +12,7 @@ for stack in cloudlink-demo-healthy-private-subnets cloudlink-demo-sg-block-8080
              cloudlink-demo-nacl-block-8080 cloudlink-demo-peering-working \
              cloudlink-demo-peering-missing-forward-route cloudlink-demo-peering-missing-return-route \
              cloudlink-demo-wrong-route-table-association cloudlink-demo-multiple-blockers \
-             cloudlink-scenarios cloudlink-web cloudlink-probes cloudlink-demo-network \
-             cloudlink-services cloudlink-network; do
+             cloudlink-web cloudlink-demo-network cloudlink-services cloudlink-network; do
   if details=$(aws cloudformation describe-stacks "${aws_args[@]}" --stack-name "$stack" 2>&1); then
     printf 'Deleting %s...\n' "$stack"
     aws cloudformation delete-stack "${aws_args[@]}" --stack-name "$stack"
