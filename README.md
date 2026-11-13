@@ -1,28 +1,43 @@
 # CloudLink
 
-CloudLink is a guided network troubleshooting tool for cloud-hosted applications. It tests connectivity **from one cloud instance to another** and turns the result into a clear next step. A service that cannot be reached might have a routing, firewall, port, or application problem; CloudLink helps narrow down what to check without changing the network for you.
+CloudLink is a guided network troubleshooting tool for AWS. Pick two EC2 instances to see whether they can communicate and which network settings could explain a failure. CloudLink brings the live test and the AWS configuration into one dashboard so cloud administrators and developers can decide what to check next.
 
-## What it does
+## How it works
 
-- Lets you choose a source and destination from the configured lab instances.
-- Runs a test from the source using ICMP ping, HTTP, HTTPS, an SSH server-banner check, or a custom TCP port.
-- Shows the result, a likely area to investigate, and a suggested next check.
-- Inspects direct VPC peering and the effective forward/return IPv4 routes, including missing routes and blackhole targets.
-- Saves recent results so you can compare before and after a configuration change.
-- Queues hosted requests and shows their progress while background workers run the checks.
+Choose a source, a destination, and the traffic you want to check.
 
-CloudLink's tests are read-only. A failed check is specific to the protocol and port selected; it does not, by itself, prove that all traffic between the instances is blocked.
+| Mode | What it shows |
+| --- | --- |
+| **Connectivity Test** | Runs a live probe from the selected source using ping, HTTP, HTTPS, an SSH banner check, or a custom TCP port. |
+| **Configuration Review** | Inspects direct VPC peering, forward and return routes, security groups, and network ACLs for the selected private IPv4 path. |
 
-## Who it is for
+CloudLink leaves network settings untouched. Results apply to the selected direction, protocol, and port. Configuration findings show whether AWS settings permit the traffic. A live test also depends on the destination service responding.
 
-CloudLink is intended for junior cloud administrators, application developers, and small technical teams that need a straightforward way to investigate connectivity between services. It brings the first checks and their results into one place without requiring users to work through several cloud dashboards for every test.
+## Architecture
 
-## Current project scope
+The browser reaches the dashboard over HTTPS through Amazon CloudFront. An Application Load Balancer distributes requests to EC2 web hosts in an Auto Scaling group across two Availability Zones. The API queues diagnostics in Amazon SQS, and workers on the EC2 hosts run the checks and save job status and results in Amazon DynamoDB. The dashboard polls for updates, and recent results are scoped to each browser session.
 
-CloudLink's application runs in its own VPC, with a load balancer and an Auto Scaling Group spanning two Availability Zones. Classmates access the dashboard through a CloudFront HTTPS URL. SQS queues connectivity requests, and DynamoDB shares job progress, results, and history between application servers. Failed app instances can be replaced without losing the shared history.
+The application runs in its own VPC and uses private peering connections to reach the lab nodes in two shared lab VPCs. Workers run live probes from the selected source over a management SSH connection. CloudWatch tracks application logs and queue activity, and the SQS backlog helps drive scaling.
 
-The two private probe instances live in a separate lab VPC, reached through VPC peering. CloudLink discovers running instances tagged as its probes and connects to the selected source over private SSH. The source then runs the selected check against the destination. TCP 8080 and ICMP are allowed between the probes; peer-to-peer SSH is blocked to demonstrate a protocol-specific failure. The probes do not serve HTTP/HTTPS on ports 80/443.
+## Demo scenarios
 
-The dashboard is a shared class demo without user accounts. Individual probe nodes remain single instances. Peering and route findings are saved with each connectivity result and can be reopened from history. Configuration analysis currently covers local and directly peered private IPv4 paths; unsupported paths or unavailable AWS information are labeled as not assessed. Security-group and ACL analysis, along with additional network scenarios, remain future work. Local development can still use the synchronous API and SQLite history.
+Use **TCP port 8080** in the direction shown to reproduce the baseline scenarios. Choose any two different lab nodes and either mode to explore other supported protocols or ports.
 
-CloudFormation and CloudShell scripts set up and tear down this environment in a personal AWS account.
+| Node pair | What Configuration Review should report |
+| --- | --- |
+| A → B | Same-VPC traffic is allowed. |
+| C → D | The destination security group blocks traffic. |
+| E → F | The destination subnet’s network ACL blocks traffic. |
+| G → H | Traffic is allowed across VPC peering. |
+| I → J | The source subnet’s route table lacks a forward route. |
+| K → L | The destination subnet’s route table lacks a return route. |
+| M → N | The associated route table lacks the forward route. |
+| O → P | A missing return route, a security group rule, and a network ACL rule block traffic. |
+
+## Future work
+
+As more teams run diagnostics concurrently, CloudLink could scale diagnostic workers with the SQS backlog and scale web hosts with dashboard traffic. Adding AWS region selection would let teams discover EC2 instances and diagnose connections between peered VPCs in different regions.
+
+## Team
+
+Built for CSE 4333 Cloud Computing by **Joel Beauregard** (application and AWS deployment) and **Johnny Tran** (network scenarios and lab design).
