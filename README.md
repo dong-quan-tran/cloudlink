@@ -2,6 +2,15 @@
 
 CloudLink is a guided network troubleshooting tool for AWS. Pick two EC2 instances to see whether they can communicate and which network settings could explain a failure. CloudLink brings the live test and the AWS configuration into one dashboard so cloud administrators and developers can decide what to check next.
 
+## Table of contents
+
+- [How it works](#how-it-works)
+- [Architecture](#architecture)
+- [Demo scenarios](#demo-scenarios)
+- [Deploy in your own AWS account and test scenarios](#deploy-in-your-own-aws-account-and-test-scenarios)
+- [Future work](#future-work)
+- [Team](#team)
+
 ## How it works
 
 Choose a source, a destination, and the traffic you want to check.
@@ -34,15 +43,17 @@ Use **TCP port 8080** in the direction shown to reproduce the baseline scenarios
 | M → N | The associated route table lacks the forward route. |
 | O → P | A missing return route, a security group rule, and a network ACL rule block traffic. |
 
-## Deploy in the instructor’s AWS account
+## Deploy in your own AWS account and test scenarios
 
-Sign in to the instructor’s AWS account, select **US East (N. Virginia), `us-east-1`**, and open **AWS CloudShell**. Deployment uses that account’s signed-in CloudShell identity. The templates create the application role, instance profile, and probe SSH key automatically.
+Sign in to your AWS account, select **US East (N. Virginia), `us-east-1`**, and open **AWS CloudShell**. Deployment uses that account’s signed-in CloudShell identity. The templates create the application role, instance profile, and probe SSH key automatically.
 
 Before deploying, confirm the account has the following available in `us-east-1`.
 
 - Permissions to provision the CloudFormation resources, including IAM roles and instance profiles and `iam:PassRole`.
 - Room for **three new VPCs**, covering the application and two lab networks.
 - Enough **Running On-Demand Standard instances** vCPU quota for the fleet. The 16 `t2.micro` probes and four initial `t3.small` web hosts use **24 vCPUs**. Allow **28 vCPUs** for the web fleet to scale to six hosts, plus any existing usage.
+
+### Deploy
 
 Run these commands in CloudShell.
 
@@ -54,7 +65,17 @@ bash scripts/deploy.sh
 
 The script displays the destination AWS account and deploys the network, shared services, all eight node-pair scenarios, and the web application in dependency order. Each web host installs the app from the checked-out branch. Keep CloudShell open until the script finishes and prints the **CloudLink HTTPS URL**, then open that URL to use the dashboard. The same URL is available under **CloudFormation → cloudlink-web → Outputs → WebUrl**.
 
-These resources incur AWS charges while deployed. After the demonstration, run the teardown from the same repository folder.
+### Test the scenarios
+
+Open the HTTPS dashboard and select a source and destination from the [demo scenarios](#demo-scenarios) table. Choose TCP port **8080** to reproduce the listed outcomes.
+
+Run **Configuration Review** to inspect peering, forward and return routes, security groups, and network ACLs for the selected traffic. Run **Connectivity Test** to send a live probe from the source instance and see whether it reaches the destination.
+
+You can also choose any two different lab nodes and explore other supported protocols or ports in either mode. Change the direction or traffic selection and compare the results in your browser session’s history.
+
+### Clean up
+
+These resources incur AWS charges while deployed. When you finish testing, run the teardown from the same repository folder.
 
 ```bash
 bash scripts/teardown.sh
