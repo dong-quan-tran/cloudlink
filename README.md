@@ -34,6 +34,34 @@ Use **TCP port 8080** in the direction shown to reproduce the baseline scenarios
 | M → N | The associated route table lacks the forward route. |
 | O → P | A missing return route, a security group rule, and a network ACL rule block traffic. |
 
+## Deploy in the instructor’s AWS account
+
+Sign in to the instructor’s AWS account, select **US East (N. Virginia), `us-east-1`**, and open **AWS CloudShell**. Deployment uses that account’s signed-in CloudShell identity. The templates create the application role, instance profile, and probe SSH key automatically.
+
+Before deploying, confirm the account has the following available in `us-east-1`.
+
+- Permissions to provision the CloudFormation resources, including IAM roles and instance profiles and `iam:PassRole`.
+- Room for **three new VPCs**, covering the application and two lab networks.
+- Enough **Running On-Demand Standard instances** vCPU quota for the fleet. The 16 `t2.micro` probes and four initial `t3.small` web hosts use **24 vCPUs**. Allow **28 vCPUs** for the web fleet to scale to six hosts, plus any existing usage.
+
+Run these commands in CloudShell.
+
+```bash
+git clone --branch main https://github.com/dong-quan-tran/cloudlink.git
+cd cloudlink
+bash scripts/deploy.sh
+```
+
+The script displays the destination AWS account and deploys the network, shared services, all eight node-pair scenarios, and the web application in dependency order. Each web host installs the app from the checked-out branch. Keep CloudShell open until the script finishes and prints the **CloudLink HTTPS URL**, then open that URL to use the dashboard. The same URL is available under **CloudFormation → cloudlink-web → Outputs → WebUrl**.
+
+These resources incur AWS charges while deployed. After the demonstration, run the teardown from the same repository folder.
+
+```bash
+bash scripts/teardown.sh
+```
+
+Review the account shown and type `delete` when prompted. The script waits for each stack to be deleted in dependency order. Teardown removes the deployed app and lab infrastructure, including saved history, queued jobs, and the managed probe key.
+
 ## Future work
 
 As more teams run diagnostics concurrently, CloudLink could scale diagnostic workers with the SQS backlog and scale web hosts with dashboard traffic. Adding AWS region selection would let teams discover EC2 instances and diagnose connections between peered VPCs in different regions.
