@@ -14,16 +14,21 @@ TERMINAL = frozenset(("completed", "failed"))
 
 
 def conditional_failure(error: ClientError) -> bool:
+    """Identify a rejected DynamoDB condition so callers can handle competing updates."""
     return error.response["Error"]["Code"] == "ConditionalCheckFailedException"
 
 
 class JobStore:
+    """Share diagnostic job state in DynamoDB and deliver job IDs through SQS."""
+
     def __init__(self, session: Any, table_name: str, queue_url: str):
+        """Connect to the shared job table and diagnostic queue using the AWS session."""
         self.table = session.resource("dynamodb").Table(table_name)
         self.queue = session.client("sqs")
         self.queue_url = queue_url
 
     def submit(self, source: Any, destination: Any, *, history_owner: str, **request: Any) -> dict[str, Any]:
+        """Save a session-owned job, then send its ID to SQS for a worker to process."""
         now = int(time.time())
         job = {
             "id": str(uuid.uuid4()), "status": "queued",
@@ -34,6 +39,7 @@ class JobStore:
             "destination_id": destination.instance_id, "destination_name": destination.name,
             "request": request,
         }
+        # Persist the request before queueing its ID so a worker can always load the job.
         self.table.put_item(Item=job, ConditionExpression="attribute_not_exists(id)")
         try:
             self.queue.send_message(QueueUrl=self.queue_url, MessageBody=json.dumps({"id": job["id"]}))
@@ -43,11 +49,14 @@ class JobStore:
         return {"id": job["id"], "status": "queued"}
 
     def get(self, job_id: str) -> dict[str, Any] | None:
+        """Read the latest stored job state using a consistent DynamoDB read."""
         return self.table.get_item(Key={"id": job_id}, ConsistentRead=True).get("Item")
 
     def claim(self, job_id: str, owner: str) -> bool:
+        """Acquire a two-minute worker lease for a queued job or one with an expired lease."""
         now = int(time.time())
         try:
+            # The conditional write gives only one worker a live lease after duplicate deliveries.
             self.table.update_item(
                 Key={"id": job_id},
                 UpdateExpression="SET #s = :running, lease_owner = :owner, lease_until = :lease",
@@ -63,6 +72,7 @@ class JobStore:
             raise
 
     def complete(self, job_id: str, owner: str, result: dict[str, Any]) -> bool:
+        """Save the result only if this worker still owns the running job."""
         try:
             self.table.update_item(
                 Key={"id": job_id},
@@ -79,6 +89,7 @@ class JobStore:
             raise
 
     def fail(self, job_id: str, message: str, queued_only: bool = False, owner: str | None = None) -> None:
+        """Mark an unfinished job as failed while respecting any required status or owner."""
         condition = "#s = :queued" if queued_only else "#s IN (:queued, :running)"
         values = {":queued": "queued", ":failed": "failed", ":error": message}
         if not queued_only:
@@ -99,6 +110,7 @@ class JobStore:
 
     @staticmethod
     def view(job: dict[str, Any]) -> dict[str, Any]:
+        """Convert stored job state into a dashboard response and display overdue jobs as failed."""
         if job["status"] == "completed":
             return {**json.loads(job["result_json"]), "id": job["id"], "status": "completed"}
         status = job["status"]
@@ -115,6 +127,7 @@ class JobStore:
         }
 
     def recent(self, history_owner: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Read this browser session's newest jobs and exclude expired history entries."""
         response = self.table.query(
             IndexName="history", KeyConditionExpression="history_partition = :p",
             ExpressionAttributeValues={":p": history_owner}, ScanIndexForward=False,

@@ -13,6 +13,7 @@ from .policy import POLICY_LABELS, api_error, describe, finding, inspect_policy,
 from .probe import TEST_PORTS, Node
 
 SCOPE = "Private IPv4 in one AWS Region, within a VPC or through direct VPC peering. Configuration cannot confirm that the destination service is listening or that its host firewall allows traffic."
+# EC2 uses a different target field for each route type. Preserve the target for diagnosis.
 TARGETS = ("GatewayId", "VpcPeeringConnectionId", "TransitGatewayId", "NatGatewayId",
            "NetworkInterfaceId", "InstanceId", "VpcEndpointId", "LocalGatewayId",
            "CarrierGatewayId", "CoreNetworkArn", "OdbNetworkArn")
@@ -24,6 +25,7 @@ TARGET_NAMES = {"pcx-": "VPC peering connection", "igw-": "Internet gateway", "t
 def route_snapshot(ec2: Any, node: Node, address: str) -> dict[str, Any]:
     """Use the explicit subnet association first; otherwise use the VPC main table."""
     try:
+        # An explicit subnet association takes precedence over the VPC main route table.
         tables = describe(ec2, "describe_route_tables", "RouteTables", [
             {"Name": "vpc-id", "Values": [node.vpc_id]},
             {"Name": "association.subnet-id", "Values": [node.subnet_id]},
@@ -41,12 +43,15 @@ def route_snapshot(ec2: Any, node: Node, address: str) -> dict[str, Any]:
         name = resource_name(table, "VPC main route table" if association == "VPC main table" else "Subnet route table")
         evidence = {"table_id": table["RouteTableId"], "table_name": name, "association": association,
                     "subnet_id": node.subnet_id, "destination_ip": address}
+        # Avoid reporting a definite route while AWS is still changing the association.
         for item in table.get("Associations", []):
             if item.get("SubnetId") == node.subnet_id and item.get("AssociationState", {}).get("State", "associated") != "associated":
                 return {**evidence, "error": "The subnet's route-table association is changing. Retry when it is stable."}
         routes = table.get("Routes", [])
+        # Unresolved prefix lists could contain a more-specific match than the visible CIDRs.
         if any(route.get("DestinationPrefixListId") for route in routes):
             return {**evidence, "error": "This table includes prefix-list destinations, which this version cannot resolve. The winning route could not be verified."}
+        # Compare every matching CIDR. The longest prefix wins, including over the default route.
         matches = []
         for route in routes:
             cidr = route.get("DestinationCidrBlock")
@@ -56,6 +61,7 @@ def route_snapshot(ec2: Any, node: Node, address: str) -> dict[str, Any]:
                 matches.append((priority, route))
         if not matches:
             return {**evidence, "route": None}
+        # Keep equally ranked matches so an ambiguous selection becomes an unknown result.
         priority = max(item[0] for item in matches)
         winners = [route for rank, route in matches if rank == priority]
         if len(winners) != 1:
@@ -69,10 +75,12 @@ def route_snapshot(ec2: Any, node: Node, address: str) -> dict[str, Any]:
 
 
 def peering_check(ec2: Any, source: Node, destination: Node, snapshots: list[dict[str, Any]]) -> tuple[dict[str, Any], set[str] | None]:
+    """Check for active direct peering and return its finding with the active connection IDs."""
     if source.vpc_id == destination.vpc_id:
         return finding("peering", "VPC peering", "not_required", "Both instances are in the same VPC; no peering connection is needed.",
                        source_vpc=source.vpc_id, destination_vpc=destination.vpc_id), set()
     try:
+        # Include both requester/accepter orientations because either VPC may have initiated peering.
         vpcs = [source.vpc_id, destination.vpc_id]
         peers = describe(ec2, "describe_vpc_peering_connections", "VpcPeeringConnections", [
             {"Name": "requester-vpc-info.vpc-id", "Values": vpcs},
@@ -81,6 +89,7 @@ def peering_check(ec2: Any, source: Node, destination: Node, snapshots: list[dic
         peers = [peer for peer in peers if {
             peer.get("RequesterVpcInfo", {}).get("VpcId"), peer.get("AccepterVpcInfo", {}).get("VpcId")
         } == set(vpcs)]
+        # Retain connection IDs so each route can be checked against the actual VPC pair.
         active = {peer["VpcPeeringConnectionId"] for peer in peers if peer.get("Status", {}).get("Code") == "active"}
         evidence = {"source_vpc": source.vpc_id, "destination_vpc": destination.vpc_id,
                     "connections": [{"id": peer["VpcPeeringConnectionId"],
@@ -98,11 +107,14 @@ def peering_check(ec2: Any, source: Node, destination: Node, snapshots: list[dic
                   if unsupported else "No active direct peering links these VPCs. Establish or accept their direct peering connection; peering through a third VPC is not transitive.")
         return finding("peering", "VPC peering", status, detail, **evidence), active
     except (ClientError, BotoCoreError) as error:
+        # None means peering could not be inspected. An empty set means no active peers were found.
         return finding("peering", "VPC peering", "unknown", api_error(error)), None
 
 
 def route_check(key: str, label: str, snapshot: dict[str, Any], same_vpc: bool,
                 active_peers: set[str] | None, peer_names: dict[str, str]) -> dict[str, Any]:
+    """Evaluate the selected route and explain missing, inactive, or unsupported targets."""
+    # Carry the effective table and chosen target into the UI alongside the verdict.
     evidence = {key: value for key, value in snapshot.items() if key not in ("error", "route")}
     if snapshot.get("error"):
         return finding(key, label, "unknown", snapshot["error"], **evidence)
@@ -113,6 +125,7 @@ def route_check(key: str, label: str, snapshot: dict[str, Any], same_vpc: bool,
     target_name = peer_names.get(target) or next((name for prefix, name in TARGET_NAMES.items()
                                                 if target.startswith(prefix)), "Local VPC" if target == "local" else "Other route target")
     evidence["target_name"] = target_name
+    # AWS selects the most-specific route even when its target is unusable.
     if route.get("State") == "blackhole":
         return finding(key, label, "fail", f"The most-specific route ({snapshot['cidr']} → {target_name}) is a blackhole. Restore its target or replace the route; a less-specific route will not take over.", **evidence)
     if route.get("State") != "active":
@@ -122,6 +135,7 @@ def route_check(key: str, label: str, snapshot: dict[str, Any], same_vpc: bool,
         detail = ("The selected active local route covers the destination inside this VPC." if same_vpc else
                   "The selected local route stays inside this VPC and cannot reach the other VPC. Check overlapping addresses and the route to the peer.")
     elif route.get("VpcPeeringConnectionId"):
+        # A route can point to an inactive peer or one connecting a different VPC pair.
         if active_peers is None:
             status, detail = "unknown", "The route is active, but access to peering information was unavailable, so its target could not be verified."
         elif not same_vpc and target in active_peers:
@@ -137,6 +151,7 @@ def route_check(key: str, label: str, snapshot: dict[str, Any], same_vpc: bool,
 
 def analyze_network(session: Any, source: Node, destination: Node, address_type: str = "private",
                     test_type: str | None = None, port: int | None = None) -> dict[str, Any]:
+    """Inspect both routing directions and relevant access rules, then combine their findings."""
     labels = (("peering", "VPC peering"), ("forward_route", "Source → destination route"),
               ("return_route", "Destination → source route"))
     all_labels = labels + POLICY_LABELS if test_type else labels
@@ -154,6 +169,7 @@ def analyze_network(session: Any, source: Node, destination: Node, address_type:
             reason = "Both instances need valid private IPv4 addresses for configuration analysis."
     except ValueError:
         reason = "Both instances need valid private IPv4 addresses for configuration analysis."
+    # Missing metadata or unsupported input prevents assessment of the path.
     if reason:
         checks = [finding(key, label, "unknown", reason) for key, label in all_labels]
     else:
@@ -165,18 +181,22 @@ def analyze_network(session: Any, source: Node, destination: Node, address_type:
                     "checks": [finding(key, label, "unknown", api_error(error)) for key, label in all_labels]}
         same_vpc = source.vpc_id == destination.vpc_id
         group_refs = True
+        # Same-subnet traffic still needs security-group inspection, but skips routing checks.
         if same_vpc and source.subnet_id == destination.subnet_id:
             checks = [finding("peering", "VPC peering", "not_required", "Both instances are in the same VPC; no peering is needed.")]
             checks += [finding(key, label, "not_required", "Both instances share a subnet. A route-table lookup does not establish whether their within-subnet traffic can pass.") for key, label in labels[1:]]
         else:
+            # Inspect each subnet independently. A valid forward route does not establish a return path.
             snapshots = [route_snapshot(ec2, source, destination.private_ip), route_snapshot(ec2, destination, source.private_ip)]
             peer, active = peering_check(ec2, source, destination, snapshots)
             peer_names = {connection["id"]: connection["name"] for connection in peer.get("connections", [])}
             checks = [peer, route_check(*labels[1], snapshots[0], same_vpc, active, peer_names),
                       route_check(*labels[2], snapshots[1], same_vpc, active, peer_names)]
+            # Verify both routes before treating peer security-group references as usable.
             group_refs = all(check["status"] == "pass" for check in checks[1:])
         if test_type:
             checks.extend(inspect_policy(ec2, source, destination, test_type, TEST_PORTS.get(test_type, port), group_refs))
+    # Report a known blocker first, then incomplete evidence, then a rule overview.
     status = "fail" if any(check["status"] == "fail" for check in checks) else (
         "unknown" if any(check["status"] == "unknown" for check in checks) else
         "review" if any(check["status"] == "review" for check in checks) else "pass")
@@ -191,6 +211,7 @@ def analyze_network(session: Any, source: Node, destination: Node, address_type:
 
 def configuration_result(session: Any, source: Node, destination: Node, address_type: str,
                          test_type: str, port: int | None) -> dict[str, Any]:
+    """Wrap a configuration review with the selected nodes, traffic type, and timestamp."""
     analysis = analyze_network(session, source, destination, address_type, test_type, port)
     return {
         "mode": "configuration", "timestamp": datetime.now(timezone.utc).isoformat(),

@@ -67,6 +67,7 @@ print(json.dumps(result))
 
 @dataclass(frozen=True)
 class Node:
+    """Describe a discovered lab instance and the network metadata needed for diagnostics."""
     instance_id: str
     name: str
     private_ip: str | None
@@ -77,6 +78,7 @@ class Node:
     security_group_ids: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
+        """Return instance metadata in the dictionary format used by the API."""
         return asdict(self)
 
 
@@ -137,6 +139,7 @@ def load_inventory(path: Path) -> list[Node]:
 
 
 def _run_ssh(source_host: str, key_path: Path, remote_command: list[str], input_text: str | None = None) -> dict[str, Any]:
+    """Run a bounded command on the source instance and capture its output and elapsed time."""
     host = str(ipaddress.ip_address(source_host))
     command = [
         "ssh",
@@ -246,8 +249,10 @@ def run_probe(
         raise RuntimeError("OpenSSH is required on the CloudLink host.")
 
     def test_with_key(key_path: Path) -> dict[str, Any]:
+        """Use the management key to run the selected probe and distinguish SSH failures."""
         if test_type == "ping":
             response = _run_ssh(source_address, key_path, ["ping", "-c", "2", "-W", "2", destination_address])
+            # SSH exit 255 identifies a management failure before a usable probe result.
             if response["exit_code"] == 255:
                 return {"ok": False, "detail": response["stderr"] or "Management SSH failed", "management_error": True}
             if response["exit_code"] is None or response["exit_code"] not in (0, 1):

@@ -18,6 +18,7 @@ from .probe import TEST_TYPES, discover_nodes, load_inventory, run_probe
 
 
 def create_app(session: Any | None = None, data_path: Path | None = None, job_store: Any | None = None) -> Flask:
+    """Configure the dashboard and API with hosted queued jobs or local SQLite history."""
     app = Flask(__name__)
     inventory_path = os.getenv("CLOUDLINK_INVENTORY_PATH")
     table_name = os.getenv("CLOUDLINK_TABLE_NAME")
@@ -41,12 +42,14 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
                       MAX_CONTENT_LENGTH=16 * 1024)
 
     def available_nodes() -> list[Any]:
+        """Load a configured local inventory or discover running probes through EC2."""
         if inventory_path:
             return load_inventory(Path(inventory_path))
         return discover_nodes(session.client("ec2"))
 
     @app.after_request
     def security_headers(response: Any) -> Any:
+        """Disable response caching and apply browser security headers to every response."""
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -58,6 +61,7 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
 
     @app.get("/")
     def index() -> str:
+        """Render the dashboard and initialize the browser session's request and history tokens."""
         if "csrf_token" not in browser_session:
             browser_session["csrf_token"] = secrets.token_urlsafe(32)
         if "history_owner" not in browser_session:
@@ -66,10 +70,12 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
 
     @app.get("/healthz")
     def health() -> Any:
+        """Return the lightweight health response used by the load balancer."""
         return jsonify({"status": "ok"})
 
     @app.get("/api/instances")
     def instances() -> Any:
+        """Return the available lab nodes for the source and destination selectors."""
         try:
             nodes = available_nodes()
             return jsonify({"instances": [node.to_dict() for node in nodes]})
@@ -79,6 +85,7 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
 
     @app.get("/api/history")
     def history() -> Any:
+        """Return recent results belonging to the requesting browser session."""
         history_owner = browser_session.get("history_owner")
         if not history_owner:
             return jsonify({"tests": []})
@@ -90,6 +97,7 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
 
     @app.get("/api/tests/<uuid:job_id>")
     def job_status(job_id: Any) -> Any:
+        """Return an unexpired job's status or result only to its owning browser session."""
         if job_store is None:
             return jsonify({"error": "Queued jobs are not enabled locally."}), 404
         history_owner = browser_session.get("history_owner")
@@ -97,6 +105,7 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
             return jsonify({"error": "This test was not found or has expired."}), 404
         try:
             job = job_store.get(str(job_id))
+            # Keep job polling private even when a user knows another job's UUID.
             if job is None or job.get("history_partition") != history_owner or int(job["expires_at"]) <= int(time.time()):
                 return jsonify({"error": "This test was not found or has expired."}), 404
             return jsonify(job_store.view(job))
@@ -106,6 +115,7 @@ def create_app(session: Any | None = None, data_path: Path | None = None, job_st
 
     @app.post("/api/tests")
     def test_connection() -> Any:
+        """Validate the selected diagnostic, then queue it or run it locally and save the result."""
         csrf_token = browser_session.get("csrf_token")
         history_owner = browser_session.get("history_owner")
         if not history_owner or not csrf_token or not secrets.compare_digest(request.headers.get("X-CloudLink-Token", ""), csrf_token):

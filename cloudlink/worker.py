@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 def log_completion(job_id: str, mode: str, test_type: str, result: dict[str, Any],
                    started: float, queue_wait_ms: int | None) -> None:
+    """Log the diagnostic outcome and queue, execution, and total durations for CloudWatch."""
     if mode == "configuration":
         outcome = result["network_analysis"]["status"]
     else:
@@ -39,15 +40,18 @@ def log_completion(job_id: str, mode: str, test_type: str, result: dict[str, Any
 
 
 def log_execution_error(job_id: str, reason: str) -> None:
+    """Log a structured reason when a job cannot be executed successfully."""
     logger.warning(json.dumps({"event": "diagnostic_execution_error", "job_id": job_id, "reason": reason}))
 
 
 def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> None:
+    """Claim and execute an SQS job, save its result, and acknowledge completed work."""
     job_id = json.loads(message["Body"])["id"]
     job = store.get(job_id)
     receipt = message["ReceiptHandle"]
 
     def acknowledge() -> None:
+        """Delete this delivery from SQS after its job has been handled."""
         store.queue.delete_message(QueueUrl=store.queue_url, ReceiptHandle=receipt)
 
     if job is None or job["status"] in TERMINAL:
@@ -71,6 +75,7 @@ def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> N
         pass  # Missing or invalid timing metadata must not stop a diagnostic.
     try:
         source_id, destination_id = job["source_id"], job["destination_id"]
+        # Refresh only the selected nodes because their addresses or state may have changed in the queue.
         selected = discover_nodes(session.client("ec2"), instance_ids=(source_id, destination_id))
         nodes = {node.instance_id: node for node in selected}
         source, destination = nodes.get(source_id), nodes.get(destination_id)
@@ -104,6 +109,7 @@ def process_message(store: JobStore, session: Any, message: dict[str, Any]) -> N
 
 
 def main() -> None:
+    """Poll SQS for diagnostic jobs until the worker receives a shutdown signal."""
     import boto3
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -112,6 +118,7 @@ def main() -> None:
     stopping = False
 
     def stop(_signum: int, _frame: Any) -> None:
+        """Request shutdown after the current job finishes."""
         nonlocal stopping
         stopping = True
 

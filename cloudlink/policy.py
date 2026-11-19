@@ -15,14 +15,17 @@ POLICY_LABELS = (
     ("source_acl", "Source subnet ACL"),
     ("destination_acl", "Destination subnet ACL"),
 )
+# Model the possible client ports used by TCP reply traffic during configuration review.
 EPHEMERAL_PORTS = (1024, 65535)
 
 
 def finding(key: str, label: str, status: str, detail: str, **evidence: Any) -> dict[str, Any]:
+    """Build a dashboard finding with its status, explanation, and supporting AWS details."""
     return {"key": key, "label": label, "status": status, "detail": detail, **evidence}
 
 
 def describe(ec2: Any, operation: str, field: str, filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collect every page from an EC2 describe operation using the supplied filters."""
     result = []
     request: dict[str, Any] = {"Filters": filters}
     while True:
@@ -30,10 +33,12 @@ def describe(ec2: Any, operation: str, field: str, filters: list[dict[str, Any]]
         result.extend(page.get(field, []))
         if not page.get("NextToken"):
             return result
+        # EC2 may split matching resources across pages, even with narrow filters.
         request["NextToken"] = page["NextToken"]
 
 
 def api_error(error: Exception) -> str:
+    """Turn an AWS read failure into a message that is safe to show in the dashboard."""
     if isinstance(error, ClientError):
         code = error.response["Error"]["Code"]
         return f"AWS returned {code}. Check the app's EC2 read permissions and retry."
@@ -41,19 +46,23 @@ def api_error(error: Exception) -> str:
 
 
 def resource_name(resource: dict[str, Any], fallback: str) -> str:
+    """Use a nonempty Name tag when available, otherwise return the supplied label."""
     return next((tag["Value"].strip() for tag in resource.get("Tags", [])
                  if tag.get("Key") == "Name" and tag.get("Value", "").strip()), fallback)
 
 
 def contains(cidr: str, address: str) -> bool:
+    """Check whether an IP address belongs to the rule's CIDR range."""
     return ip_address(address) in ip_network(cidr)
 
 
 def protocol(value: str) -> str:
+    """Normalize named IP protocols to the numbers used by AWS access rules."""
     return {"tcp": "6", "udp": "17", "icmp": "1"}.get(value, value)
 
 
 def rule_label(proto: str, low: int, high: int) -> str:
+    """Format a protocol and its port range or ICMP type and code for display."""
     if proto == "-1":
         return "All traffic"
     if proto in ("6", "17"):
@@ -66,29 +75,35 @@ def rule_label(proto: str, low: int, high: int) -> str:
 
 def group_check(key: str, label: str, groups: dict[str, Any], node: Node, peer: Node,
                 outbound: bool, test_type: str, port: int | None, group_refs: bool) -> dict[str, Any]:
+    """Evaluate matching allow rules across the instance's attached security groups."""
     names = {group_id: resource_name(group, group.get("GroupName") or "Security group")
              for group_id, group in groups.items()}
     evidence = {"resources": list(node.security_group_ids),
                 "resource_names": [names.get(group_id, "Security group") for group_id in node.security_group_ids]}
     if not node.security_group_ids or any(group not in groups for group in node.security_group_ids):
         return finding(key, label, "unknown", "Could not read all security groups attached to this instance.", **evidence)
+    # Security groups combine their allow rules. One verified match permits the request.
     rules, unresolved = [], False
     for group_id in node.security_group_ids:
         for rule in groups[group_id].get("IpPermissionsEgress" if outbound else "IpPermissions", []):
             proto = protocol(rule["IpProtocol"])
             low, high = rule.get("FromPort", -1), rule.get("ToPort", -1)
+            # Echo requests use ICMP type 8/code 0. Application ports are evaluated as TCP.
             if test_type == "ping" and proto != "-1" and not (proto == "1" and low in (-1, 8) and high in (-1, 0)):
                 continue
             if port is not None and proto != "-1" and not (proto == "6" and low <= port <= high):
                 continue
+            # For outbound rules the peer is the destination; for inbound rules it is the sender.
             matches = [item["CidrIp"] for item in rule.get("IpRanges", []) if contains(item["CidrIp"], peer.private_ip)]
             refs = [item["GroupId"] for item in rule.get("UserIdGroupPairs", [])
                     if item.get("GroupId") in peer.security_group_ids]
             ref_names = [names.get(ref, "Peer security group") for ref in refs]
+            # Trust a peer group reference only when routing established that it is usable.
             if group_refs:
                 matches.extend(ref_names)
             elif refs:
                 unresolved = True
+            # Keep unresolved rules visible so incomplete evidence produces an unknown verdict.
             prefixes = [item["PrefixListId"] for item in rule.get("PrefixListIds", [])]
             if prefixes:
                 unresolved = True
@@ -97,6 +112,7 @@ def group_check(key: str, label: str, groups: dict[str, Any], node: Node, peer: 
                 targets += [f"{prefix} (unresolved)" for prefix in prefixes]
                 rules.append((bool(matches), f"{names[group_id]} · {rule_label(proto, low, high)} · {', '.join(targets)}"))
     evidence["rules"] = [description for _, description in rules]
+    # A verified allow rule is sufficient even if other matching rules remain unresolved.
     if any(matched for matched, _ in rules):
         if test_type == "overview":
             return finding(key, label, "review", "These allow rules match the peer. Select a traffic type to check whether a particular flow is allowed.", **evidence)
@@ -109,13 +125,17 @@ def group_check(key: str, label: str, groups: dict[str, Any], node: Node, peer: 
 
 def acl_check(key: str, label: str, acl: dict[str, Any], peer_ip: str, source: bool,
               test_type: str, port: int | None) -> dict[str, Any]:
+    """Evaluate ordered subnet ACL rules for the request and its return traffic."""
+    # ACL priority follows rule numbers. Keep only IPv4 entries covering this peer address.
     entries = sorted((entry for entry in acl.get("Entries", [])
                       if entry.get("CidrBlock") and contains(entry["CidrBlock"], peer_ip)),
                      key=lambda entry: entry["RuleNumber"])
     name = resource_name(acl, "Default network ACL" if acl.get("IsDefault") else "Subnet network ACL")
     evidence: dict[str, Any] = {"resources": [acl["NetworkAclId"]], "resource_names": [name]}
     outcomes, lines = [], []
+    # ACLs are stateless, so inspect the request and reply separately on this subnet.
     for reply in (False, True):
+        # Source request/reply directions are outbound/inbound; the destination uses the reverse.
         outbound = source != reply
         direction = f"{'Reply' if reply else 'Request'} {'outbound' if outbound else 'inbound'}"
         rules = [entry for entry in entries if entry["Egress"] == outbound]
@@ -135,6 +155,7 @@ def acl_check(key: str, label: str, acl: dict[str, Any], peer_ip: str, source: b
                 outcomes.append("fail")
             continue
 
+        # Echo replies use type 0/code 0. The first matching ACL entry determines the outcome.
         if test_type == "ping":
             icmp_type = 0 if reply else 8
             matches = [entry for entry in rules if entry["Protocol"] == "-1" or (
@@ -143,16 +164,20 @@ def acl_check(key: str, label: str, acl: dict[str, Any], peer_ip: str, source: b
             winners = [matches[0]] if matches else [None]
         else:
             # Only rule boundaries can change which ordered rule wins. Sample each interval.
+            # TCP replies target the initiating client port, so assess the full modeled range.
             low, high = EPHEMERAL_PORTS if reply else (port, port)
             matches = [entry for entry in rules if entry["Protocol"] in ("-1", "6")]
             ranges = [(entry, entry.get("PortRange", {}).get("From", 0), entry.get("PortRange", {}).get("To", 65535))
                       if entry["Protocol"] == "6" else (entry, 0, 65535) for entry in matches]
+            # A rule can change the verdict only at a range boundary. One point per interval suffices.
             starts = {low} | {point for _, first, last in ranges for point in (first, last + 1) if low < point <= high}
             winners = [next((entry for entry, first, last in ranges if first <= point <= last), None)
                        for point in sorted(starts)]
+        # No matching entry is an implicit deny. A partially allowed reply range is inconclusive.
         allowed = [entry is not None and entry["RuleAction"] == "allow" for entry in winners]
         outcome = "pass" if all(allowed) else "unknown" if any(allowed) else "fail"
         outcomes.append(outcome)
+        # Several port intervals may select the same rule. Show that rule once in the evidence.
         matched = dict.fromkeys(f"#{entry['RuleNumber']} {entry['RuleAction']}" if entry else "implicit deny" for entry in winners)
         lines.append(f"{direction} · {', '.join(matched)}")
 
@@ -170,15 +195,18 @@ def acl_check(key: str, label: str, acl: dict[str, Any], peer_ip: str, source: b
 
 def inspect_policy(ec2: Any, source: Node, destination: Node, test_type: str, port: int | None,
                    group_refs: bool) -> list[dict[str, Any]]:
+    """Read the selected nodes' security groups and subnet ACLs and return their findings."""
     try:
         ids = sorted(set(source.security_group_ids) | set(destination.security_group_ids))
         groups = describe(ec2, "describe_security_groups", "SecurityGroups", [{"Name": "group-id", "Values": ids}]) if ids else []
         by_id = {group["GroupId"]: group for group in groups}
+        # Security groups track connection state, so inspect request egress and ingress only.
         checks = [group_check(*POLICY_LABELS[0], by_id, source, destination, True, test_type, port, group_refs),
                   group_check(*POLICY_LABELS[1], by_id, destination, source, False, test_type, port, group_refs)]
     except (ClientError, BotoCoreError) as error:
         checks = [finding(*item, "unknown", api_error(error)) for item in POLICY_LABELS[:2]]
 
+    # Subnet ACLs filter traffic crossing the subnet boundary. Within-subnet traffic skips them.
     if source.subnet_id == destination.subnet_id:
         return checks + [finding(*item, "not_required", "Traffic within the same subnet does not cross a subnet ACL.")
                          for item in POLICY_LABELS[2:]]
@@ -186,6 +214,7 @@ def inspect_policy(ec2: Any, source: Node, destination: Node, test_type: str, po
         acls = describe(ec2, "describe_network_acls", "NetworkAcls", [
             {"Name": "association.subnet-id", "Values": [source.subnet_id, destination.subnet_id]},
         ])
+        # Resolve each subnet association explicitly so the correct ACL is evaluated for each side.
         for item, node, peer, is_source in ((POLICY_LABELS[2], source, destination, True),
                                             (POLICY_LABELS[3], destination, source, False)):
             matches = [acl for acl in acls if any(link.get("SubnetId") == node.subnet_id for link in acl.get("Associations", []))]

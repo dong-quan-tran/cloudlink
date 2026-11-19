@@ -10,10 +10,14 @@ from typing import Any
 
 
 class HistoryStore:
+    """Store local diagnostic results with separate history for each browser session."""
+
     def __init__(self, path: Path):
+        """Create the SQLite database and add the session column to older databases."""
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection, connection:
+            # Serialize schema changes when local requests open the database together.
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS tests (
@@ -31,9 +35,11 @@ class HistoryStore:
                 connection.execute("ALTER TABLE tests ADD COLUMN history_owner TEXT")
 
     def _connect(self) -> sqlite3.Connection:
+        """Open a connection to the local history database."""
         return sqlite3.connect(self.path)
 
     def add(self, result: dict[str, Any], history_owner: str) -> int:
+        """Save a completed result for its browser session and return the new record ID."""
         with closing(self._connect()) as connection, connection:
             cursor = connection.execute(
                 """INSERT INTO tests
@@ -51,6 +57,7 @@ class HistoryStore:
             return int(cursor.lastrowid)
 
     def recent(self, history_owner: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Return the newest saved results belonging to this browser session."""
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 "SELECT id, result_json FROM tests WHERE history_owner = ? ORDER BY id DESC LIMIT ?",
